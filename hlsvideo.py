@@ -420,7 +420,7 @@ class HLSVideo(object):
             if self.debug:
                 print "(4)Please check [ {}/{}.ts ]".format(folder, self.datename)
             else:
-                print "(4)Please check [ {}/{}.ts ]".format(self.datename)
+                print "(4)Please check [ {}.ts ]".format(self.datename)
             # 清理临时文件
             if not self.debug:
                 enpath = "encrypt_" + self.datename
