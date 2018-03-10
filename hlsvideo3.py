@@ -129,7 +129,6 @@ class HLSVideo(object):
             "TVer": "manifest.prod.boltdns.net",
             "Asahi": "tv-asahi",
             "STchannel": "aka-bitis-hls-vod.uliza.jp",
-            "DMM": "dmm",
             "FOD": "fod",
             "MBS": "secure.brightcove.com"
         }
@@ -156,42 +155,39 @@ class HLSVideo(object):
         video_type = site[1]
         key_video = []
         # key的下载需要playlist的cookies
-        if video_type == "FOD":
-            m3u8kurl = playlist
-        else:
-            response = self.__requests(playlist)
-            m3u8_list_content = response.text
-            cookies = response.cookies
-            # 提取m3u8列表的最高分辨率的文件
-            rule_m3u8 = r"^[\w\-\.\/\:\?\&\=\%]+"
-            rule_px = r"RESOLUTION=[\w]+"
-            # 根据分辨率匹配
-            if "m3u8" in m3u8_list_content:
-                m3u8urls = re.findall(
-                    rule_m3u8, m3u8_list_content, re.S | re.M)
-                px_sel_num = len(m3u8urls)
-                # 根据码率匹配
-                if px_sel_num != 1:
-                    px_sels = re.findall(
-                        rule_px, m3u8_list_content, re.S | re.M)
-                    px_sels = [p.split("=")[-1].replace("x", "").zfill(4)
-                               for p in px_sels]
-                    if len(px_sels) == 0:
-                        rule_bd = r"BANDWIDTH=[\w]+"
-                        bd_sels = re.findall(
-                            rule_bd, m3u8_list_content, re.S | re.M)
-                        bd_sels = [b.split("=")[-1].zfill(4) for b in bd_sels]
-                        maxindex = bd_sels.index(max(bd_sels))
-                    else:
-                        maxindex = px_sels.index(max(px_sels))
-                    if video_type == "MBS":
-                        m3u8kurl = m3u8urls[-1]
-                    else:
-                        m3u8kurl = m3u8urls[maxindex]
+        response = self.__requests(playlist)
+        m3u8_list_content = response.text
+        cookies = response.cookies
+        # 提取m3u8列表的最高分辨率的文件
+        rule_m3u8 = r"^[\w\-\.\/\:\?\&\=\%]+"
+        rule_px = r"RESOLUTION=[\w]+"
+        # 根据分辨率匹配
+        if "m3u8" in m3u8_list_content:
+            m3u8urls = re.findall(
+                rule_m3u8, m3u8_list_content, re.S | re.M)
+            px_sel_num = len(m3u8urls)
+            # 根据码率匹配
+            if px_sel_num != 1:
+                px_sels = re.findall(
+                    rule_px, m3u8_list_content, re.S | re.M)
+                px_sels = [p.split("=")[-1].replace("x", "").zfill(4)
+                            for p in px_sels]
+                if len(px_sels) == 0:
+                    rule_bd = r"BANDWIDTH=[\w]+"
+                    bd_sels = re.findall(
+                        rule_bd, m3u8_list_content, re.S | re.M)
+                    bd_sels = [b.split("=")[-1].zfill(4) for b in bd_sels]
+                    maxindex = bd_sels.index(max(bd_sels))
                 else:
-                    m3u8kurl = ''.join(m3u8urls)
+                    maxindex = px_sels.index(max(px_sels))
+                if video_type == "MBS":
+                    m3u8kurl = m3u8urls[-1]
+                else:
+                    m3u8kurl = m3u8urls[maxindex]
             else:
-                self.__errorList("url_error")
+                m3u8kurl = ''.join(m3u8urls)
+        else:
+            self.__errorList("url_error")
 
         if self.debug:
             self.__debugInfo("m3u8url", m3u8kurl)
@@ -231,10 +227,6 @@ class HLSVideo(object):
             videohost = m3u8host
         elif video_type == "FOD":
             videohost = ""
-            url_part = playlist.split("/")[1:-1]
-            for url_p in url_part:
-                videohost = videohost + url_p + "/"
-            videohost = "https:/" + videohost
         elif video_type == "Asahi" or video_type == "STchannel":
             hostlist = m3u8main.split("/")[1:-1]
             videohost = m3u8main.split("/")[0] + "//"
@@ -257,10 +249,6 @@ class HLSVideo(object):
             iv_value = re.findall(rule_iv, m3u8_content)
             self.iv = ''.join(iv_value).split("=")[-1][2:]
             audiohost = ""
-        if video_type == "FOD":
-            rule_iv = r'IV=[\w]+'
-            iv_value = re.findall(rule_iv, m3u8_content)
-            self.iv = ''.join(iv_value).split("=")[-1][2:]
 
         # download key and save url
         rule_key = r'URI=\"(.*?)\"'
@@ -290,10 +278,7 @@ class HLSVideo(object):
                 keyname = str(key_num).zfill(4) + "_key"
                 keypath = os.path.join(keyfolder, keyname)
                 keylist.append(keypath)
-                if video_type == "FOD":
-                    r = self.__requests(url)
-                else:
-                    r = self.__requests(url, cookies=cookies)
+                r = self.__requests(url, cookies=cookies)
                 with open(keypath, "wb") as code:
                     for chunk in r.iter_content(chunk_size=1024):
                         code.write(chunk)
@@ -479,8 +464,8 @@ class HLSVideo(object):
             inputVS = os.path.join(videoin, inputV)
             outputVS = os.path.join(videoout, outputV)
             # 解密命令 核心命令
-            command = "openssl aes-128-cbc -d -in " + inputVS + \
-                " -out " + outputVS + " -nosalt -iv " + iv + " -K " + KEY
+            command = "openssl aes-128-cbc -d -in {input} -out {output} -nosalt -iv {iv} -K {key}".format(
+                input=inputVS, output=outputVS, iv=iv, key=KEY)
             p = subprocess.Popen(command, stderr=subprocess.PIPE, shell=True)
             result = p.stderr.read()
             if result:
