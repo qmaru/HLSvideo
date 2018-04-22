@@ -160,32 +160,17 @@ class HLSVideo(object):
         cookies = response.cookies
         # 提取m3u8列表的最高分辨率的文件
         rule_m3u8 = r"^[\w\-\.\/\:\?\&\=\%]+"
-        rule_px = r"RESOLUTION=[\w]+"
-        # 根据分辨率匹配
+        rule_bd = r"BANDWIDTH=([\w]+)"
+        if video_type == "GYAO":
+            rule_bd = r"EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=([\w]+)"
+        # 根据码率匹配
         if "m3u8" in m3u8_list_content:
-            m3u8urls = re.findall(
-                rule_m3u8, m3u8_list_content, re.S | re.M)
-            px_sel_num = len(m3u8urls)
-            # 根据码率匹配
-            if px_sel_num != 1:
-                px_sels = re.findall(
-                    rule_px, m3u8_list_content, re.S | re.M)
-                px_sels = [p.split("=")[-1].replace("x", "").zfill(4)
-                           for p in px_sels]
-                if len(px_sels) == 0:
-                    rule_bd = r"BANDWIDTH=[\w]+"
-                    bd_sels = re.findall(
-                        rule_bd, m3u8_list_content, re.S | re.M)
-                    bd_sels = [b.split("=")[-1].zfill(4) for b in bd_sels]
-                    maxindex = bd_sels.index(max(bd_sels))
-                else:
-                    maxindex = px_sels.index(max(px_sels))
-                if video_type == "MBS":
-                    m3u8kurl = m3u8urls[-1]
-                else:
-                    m3u8kurl = m3u8urls[maxindex]
-            else:
-                m3u8kurl = ''.join(m3u8urls)
+            m3u8urls = re.findall(rule_m3u8, m3u8_list_content, re.S | re.M)
+            bandwidth = re.findall(rule_bd, m3u8_list_content, re.S | re.M)
+            bandwidth = [int(b) for b in bandwidth]
+            group = zip(m3u8urls, bandwidth)
+            maxband = max(group, key=lambda x: x[1])
+            m3u8kurl = maxband[0]
         else:
             self.__errorList("url_error")
 
@@ -280,9 +265,6 @@ class HLSVideo(object):
                 keyname = str(key_num).zfill(4) + "_key"
                 keypath = os.path.join(keyfolder, keyname)
                 keylist.append(keypath)
-                # if video_type == "FOD":
-                #     r = self.__requests(url)
-                # else:
                 r = self.__requests(url, cookies=cookies)
                 with open(keypath, "wb") as code:
                     for chunk in r.iter_content(chunk_size=1024):
@@ -384,18 +366,21 @@ class HLSVideo(object):
             if key_num == 1:
                 key_path = ''.join(key_path)
                 try:
+                    print "(3)Decrypting..."
                     self.hlsDec(key_path, videos)
                 except Exception as e:
                     raise e
             # hlsPartition
             else:
                 try:
+                    print "(3)Decrypting..."
                     self.hlsPartition(key_path, videos)
                 except Exception as e:
                     raise e
         # 无key则直接合并视频
         else:
             try:
+                print "(3)Decrypting..."
                 self.hlsConcat(videos)
             except Exception as e:
                 raise e
@@ -404,11 +389,11 @@ class HLSVideo(object):
         folder = "decrypt_" + self.datename
         video_name = os.path.join(folder, self.datename + ".ts")
         if os.path.exists(video_name):
-            print "(3)Good!"
+            print "(4)Good!"
             if self.debug:
-                print "(4)Please check [ {}/{}.ts ]".format(folder, self.datename)
+                print "(5)Please check [ {}/{}.ts ]".format(folder, self.datename)
             else:
-                print "(4)Please check [ {}.ts ]".format(self.datename)
+                print "(5)Please check [ {}.ts ]".format(self.datename)
             # 清理临时文件
             if not self.debug:
                 enpath = "encrypt_" + self.datename
