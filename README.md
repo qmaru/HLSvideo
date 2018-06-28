@@ -12,7 +12,7 @@
 
 ## 运行环境
 
-确认系统安装有python2.7环境。
+仅在python2.7.x / 3.5.x / 3.6.x 测试
 
 ## 外部工具
 [openssl](http://slproweb.com/products/Win32OpenSSL.html)（windows需要额外安装openssl）  

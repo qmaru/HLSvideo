@@ -1,10 +1,11 @@
 # -*- coding: UTF-8 -*-
 # @author AoBeom
 # @create date 2017-12-25 04:49:59
-# @modify date 2017-12-25 04:49:59
+# @modify date 2018-06-28 17:52:17
 # @desc [HLS downloader]
 import argparse
 import binascii
+import multiprocessing
 import os
 import platform
 import re
@@ -15,6 +16,13 @@ import time
 from multiprocessing.dummy import Pool
 
 import requests
+
+if sys.version > '3':
+    py3 = True
+    import queue
+else:
+    py3 = False
+    import Queue as queue
 
 
 class HLSVideo(object):
@@ -52,8 +60,8 @@ class HLSVideo(object):
             "dec_error": "Solve the problem, please run again [ hlsvideo -e {} -k {} ]".format(para1, para2),
         }
         available = "url_error, key_error, total_error"
-        print infos.get(value, "Keyword: " + available)
-        raw_input("Press Enter to exit.\r\n")
+        print(infos.get(value, "Keyword: " + available))
+        input("Press Enter to exit.\r\n")
         sys.exit()
 
     # debug输出
@@ -74,7 +82,7 @@ class HLSVideo(object):
             "decfolder": "DEBUG [DECVIDEO]: {}".format(para1),
         }
         available = "site,m3u8url,m3u8,videohost\nkeyurl,videourls,videoparts,deccmd\nkeyfolder,encfolder,decfolder"
-        print infos.get(value, "Keyword: \n" + available)
+        print(infos.get(value, "Keyword: \n" + available))
 
     # 检查外部应用程序
     def __execCheck(self, video_type):
@@ -82,14 +90,14 @@ class HLSVideo(object):
             "openssl version", stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
         result_err = prog_openssl.stderr.read()
         if result_err:
-            raw_input("openssl NOT FOUND.\r\n")
+            input("openssl NOT FOUND.\r\n")
             sys.exit()
         if video_type == "TVer":
             prog_ffmpeg = subprocess.Popen(
                 "ffmpeg -version", stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
             result = prog_ffmpeg.stderr.read()
             if result:
-                raw_input("FFMPEG NOT FOUND.\r\n")
+                input("FFMPEG NOT FOUND.\r\n")
                 sys.exit()
 
     # 检查是否地址合法性
@@ -97,7 +105,10 @@ class HLSVideo(object):
         if url.startswith("http"):
             hostdir = ""
         else:
-            hostdir = raw_input("Enter %s: " % types)
+            if py3:
+                hostdir = input("Enter %s: " % types)
+            else:
+                hostdir = raw_input("Enter %s: " % types)
             if hostdir.endswith("/"):
                 hostdir = hostdir
             else:
@@ -115,7 +126,7 @@ class HLSVideo(object):
                 return video_path
             else:
                 return video_path
-        except BaseException, e:
+        except BaseException as e:
             raise e
 
     # 判断操作系统
@@ -254,7 +265,7 @@ class HLSVideo(object):
                 self.__debugInfo("keyfolder", keyfolder)
             keylist = []
             t = len(keyurl)
-            print "(1)GET Key...[%s]" % t
+            print("(1)GET Key...[%s]" % t)
             for i, k in enumerate(keyurl):
                 # download key
                 key_num = i + 1
@@ -288,7 +299,7 @@ class HLSVideo(object):
                 except Exception as e:
                     raise e
         else:
-            print "(1)No key."
+            print("(1)No key.")
             keypath = ""
             videourls = []
             rule_video = r'[^#\S+][\w\/\-\.\:\?\&\=]+'
@@ -306,13 +317,13 @@ class HLSVideo(object):
     # 下载重试函数
     def __retry(self, urls, files):
         try:
-            print "   Retrying..."
+            print("   Retrying...")
             r = self.__requests(urls)
             with open(files, "wb") as code:
                 for chunk in r.iter_content(chunk_size=1024):
                     code.write(chunk)
         except BaseException:
-            print "[%s] is failed." % urls
+            print("[%s] is failed." % urls)
 
     # 下载处理函数
     def __download(self, para):
@@ -344,18 +355,25 @@ class HLSVideo(object):
             video_encrypt = os.path.join(video_folder, video_name)
             videos.append(video_encrypt)
         total = len(video_urls)
-        print "(2)GET Videos...[%s]" % total
-        print "Please wait..."
+        print("(2)GET Videos...[%s]" % total)
+        print("Please wait...")
         thread = total / 4
         # Multi-threaded configuration
         if thread > 100:
             thread = 20
         else:
             thread = 10
-        pool = Pool(thread)
-        pool.map(self.__download, zip(video_urls, videos))
-        pool.close()
-        pool.join()
+        # 多线程无进度条
+        # pool = Pool(thread)
+        # pool.map(self.__download, zip(video_urls, videos))
+        # pool.close()
+        # pool.join()
+
+        # 多线程进度条版本
+        t = threadProcBar(self.__download, list(zip(video_urls, videos)))
+        t.worker()
+        t.process()
+
         present = len(os.listdir(video_folder))
         # 比较总量和实际下载数
         if present != total:
@@ -366,21 +384,21 @@ class HLSVideo(object):
             if key_num == 1:
                 key_path = ''.join(key_path)
                 try:
-                    print "(3)Decrypting..."
+                    print("(3)Decrypting...")
                     self.hlsDec(key_path, videos)
                 except Exception as e:
                     raise e
             # hlsPartition
             else:
                 try:
-                    print "(3)Decrypting..."
+                    print("(3)Decrypting...")
                     self.hlsPartition(key_path, videos)
                 except Exception as e:
                     raise e
         # 无key则直接合并视频
         else:
             try:
-                print "(3)Decrypting..."
+                print("(3)Decrypting...")
                 self.hlsConcat(videos)
             except Exception as e:
                 raise e
@@ -389,11 +407,12 @@ class HLSVideo(object):
         folder = "decrypt_" + self.datename
         video_name = os.path.join(folder, self.datename + ".ts")
         if os.path.exists(video_name):
-            print "(4)Good!"
+            print("(4)Good!")
             if self.debug:
-                print "(5)Please check [ {}/{}.ts ]".format(folder, self.datename)
+                print(
+                    "(5)Please check [ {}/{}.ts ]".format(folder, self.datename))
             else:
-                print "(5)Please check [ {}.ts ]".format(self.datename)
+                print("(5)Please check [ {}.ts ]".format(self.datename))
             # 清理临时文件
             if not self.debug:
                 enpath = "encrypt_" + self.datename
@@ -409,7 +428,7 @@ class HLSVideo(object):
                 if self.type == "TVer":
                     self.__concat_audio_video()
         else:
-            self.__errorList("not_fount", self.datename)
+            self.__errorList("not_found", self.datename)
 
     # 视频解密函数
     def hlsDec(self, keypath, videos, outname=None, ivs=None, videoin=None):
@@ -428,6 +447,8 @@ class HLSVideo(object):
         # format key
         STkey = open(k, "rb").read()
         KEY = binascii.b2a_hex(STkey)
+        if py3:
+            KEY = str(KEY, encoding="utf-8")
         if videoin:
             videoin = videoin
         else:
@@ -459,9 +480,9 @@ class HLSVideo(object):
             result = p.stderr.read()
             if result:
                 if self.debug:
-                    print "DEBUG [DECERROR]: VIDOE={}".format(inputV)
-                    print "DEBUG [DECERROR]: IV={}".format(iv)
-                    print "DEBUG [DECERROR]: KEY={}".format(KEY)
+                    print("DEBUG [DECERROR]: VIDOE={}".format(inputV))
+                    print("DEBUG [DECERROR]: IV={}".format(iv))
+                    print("DEBUG [DECERROR]: KEY={}".format(KEY))
                     self.__debugInfo("deccmd", command)
                 self.__errorList("dec_error", videoin, keypath)
             new_videos.append(outputVS)
@@ -519,7 +540,13 @@ class HLSVideo(object):
         videoput = os.path.join(video_folder, outname)
         # Windows的合并命令
         if self.__isWindows():
-            self.__longcmd(videolist, video_folder, videoput)
+            if len(videolist) > 50:
+                self.__longcmd(videolist, video_folder, videoput)
+            else:
+                for v in videolist:
+                    stream += v + "+"
+                videoin = stream[:-1]
+                self.__concat("windows", videoin, videoput)
         # Liunx的合并命令
         else:
             for v in videolist:
@@ -572,8 +599,8 @@ class HLSVideo(object):
             audio_encrypt = os.path.join(audio_folder, audio_name)
             audios.append(audio_encrypt)
         total = len(audiourls)
-        print "(SP1)GET Audios...[%s]" % total
-        print "Please wait..."
+        print("(SP1)GET Audios...[%s]" % total)
+        print("Please wait...")
         thread = total / 2
         if thread > 100:
             thread = 100
@@ -594,7 +621,7 @@ class HLSVideo(object):
         folder_audio = "decrypt_" + self.datename
         audioname = os.path.join(folder_audio, audio_file)
         if os.path.exists(folder_audio):
-            print "(SP1)Good!"
+            print("(SP1)Good!")
         if not self.debug:
             enpath = "encrypt_audio_" + self.datename
             os.chmod(folder_audio, 128)
@@ -612,16 +639,70 @@ class HLSVideo(object):
             try:
                 os.system("ffmpeg -i " + v + " -i " + a +
                           " -c copy " + self.datename + "_all.ts")
-                print ""
-                print "Please Check [ %s_all.ts ]" % self.datename
+                print("")
+                print("Please Check [ %s_all.ts ]" % self.datename)
             except BaseException:
-                print "FFMPEG ERROR."
+                print("FFMPEG ERROR.")
                 sys.exit()
 
     def hlsRedec(self, key, encfolder):
         videos = os.listdir(encfolder)
         videoin = encfolder
         self.hlsDec(key, videos, videoin=videoin)
+
+
+# 多线程进度条
+class threadProcBar(object):
+    def __init__(self, func, tasks, pool=multiprocessing.cpu_count()):
+        self.func = func
+        self.tasks = tasks
+
+        self.bar_i = 0
+        self.bar_len = 50
+        self.bar_max = len(tasks)
+
+        self.p = Pool(pool)
+        self.q = queue.Queue()
+
+    def __dosth(self, percent, task):
+        if percent == self.bar_max:
+            return self.done
+        else:
+            self.func(task)
+            return percent
+
+    def worker(self):
+        pool = self.p
+        for i, task in enumerate(self.tasks):
+            try:
+                percent = pool.apply_async(self.__dosth, args=(i, task))
+                self.q.put(percent)
+            except BaseException as e:
+                break
+
+    def process(self):
+        pool = self.p
+        while 1:
+            result = self.q.get().get()
+            if result == self.bar_max:
+                self.bar_i = self.bar_max
+            else:
+                self.bar_i += 1
+            num_arrow = int(self.bar_i * self.bar_len / self.bar_max)
+            num_line = self.bar_len - num_arrow
+            percent = self.bar_i * 100.0 / self.bar_max
+            process_bar = '[' + '>' * num_arrow + '-' * \
+                num_line + ']' + '%.2f' % percent + '%' + '\r'
+            sys.stdout.write(process_bar)
+            sys.stdout.flush()
+            if result == self.bar_max-1:
+                pool.terminate()
+                break
+        pool.join()
+        self.__close()
+
+    def __close(self):
+        print('')
 
 
 def opts():
@@ -646,7 +727,10 @@ def main():
         HLS = HLSVideo(debug=debug)
         HLS.hlsRedec(key, encfolder)
     else:
-        playlist = raw_input("Enter Playlist URL: ")
+        if py3:
+            playlist = input("Enter Playlist URL: ")
+        else:
+            playlist = raw_input("Enter Playlist URL: ")
         HLS = HLSVideo(debug=debug)
         site = HLS.hlsSite(playlist)
         keyvideo = HLS.hlsInfo(site)
