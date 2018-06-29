@@ -1,7 +1,7 @@
 # -*- coding: UTF-8 -*-
 # @author AoBeom
 # @create date 2017-12-25 04:49:59
-# @modify date 2018-06-28 17:52:17
+# @modify date 2018-06-29 17:10:33
 # @desc [HLS downloader]
 import argparse
 import binascii
@@ -17,6 +17,11 @@ from multiprocessing.dummy import Pool
 
 import requests
 
+try:
+    import termios
+except ImportError:
+    pass
+
 if sys.version > '3':
     py3 = True
     import queue
@@ -26,7 +31,7 @@ else:
 
 
 class HLSVideo(object):
-    def __init__(self, debug):
+    def __init__(self, debug, proxies):
         self.keyparts = 0
         self.iv = 0
         self.datename = time.strftime(
@@ -34,6 +39,20 @@ class HLSVideo(object):
         self.debug = debug
         self.dec = 0
         self.type = ""
+        if proxies:
+            proxyinfo = {"http": "http://" + proxies,
+                         "https": "https://" + proxies}
+            self.proxies = proxyinfo
+        else:
+            self.proxies = None
+
+    # requests错误处理
+    def __reqerror(self, tryError):
+        msg = "ERROR: {}".format(tryError)
+        if self.__isWindows():
+            interrupt("windows", msg)
+        else:
+            interrupt("linux", msg)
 
     # requests处理
     def __requests(self, url, headers=None, cookies=None, timeout=30):
@@ -44,10 +63,31 @@ class HLSVideo(object):
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/62.0.3202.89 Safari/537.36"
             }
         if cookies:
-            response = requests.get(url, headers=headers,
-                                    cookies=cookies, timeout=timeout)
+            if self.proxies:
+                try:
+                    response = requests.get(
+                        url, headers=headers, cookies=cookies, timeout=timeout, proxies=self.proxies)
+                except BaseException as e:
+                    self.__reqerror(e)
+            else:
+                try:
+                    response = requests.get(
+                        url, headers=headers, cookies=cookies, timeout=timeout)
+                except BaseException as e:
+                    self.__reqerror(e)
         else:
-            response = requests.get(url, headers=headers, timeout=timeout)
+            if self.proxies:
+                try:
+                    response = requests.get(
+                        url, headers=headers, timeout=timeout, proxies=self.proxies)
+                except BaseException as e:
+                    self.__reqerror(e)
+            else:
+                try:
+                    response = requests.get(
+                        url, headers=headers, timeout=timeout)
+                except BaseException as e:
+                    self.__reqerror(e)
         return response
 
     # 错误处理 最多接收4个变量
@@ -57,12 +97,14 @@ class HLSVideo(object):
             "key_error": "Wrong key. Please check url.",
             "total_error": "Video is not complete, please download again [Total: {} Present: {}]".format(para1, para2),
             "not_found": "Not Found {}.ts".format(para1),
-            "dec_error": "Solve the problem, please run again [ hlsvideo -e {} -k {} ]".format(para1, para2),
+            "dec_error": "Solve the problem, please run again [ python hlsvideo.py -e {} -k {} ]".format(para1, para2),
         }
         available = "url_error, key_error, total_error"
-        print(infos.get(value, "Keyword: " + available))
-        input("Press Enter to exit.\r\n")
-        sys.exit()
+        msg = infos.get(value, "Keyword: " + available)
+        if self.__isWindows():
+            interrupt("windows", msg)
+        else:
+            interrupt("linux", msg)
 
     # debug输出
     def __debugInfo(self, value, para1=None, para2=None, para3=None, status=None):
@@ -90,15 +132,21 @@ class HLSVideo(object):
             "openssl version", stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
         result_err = prog_openssl.stderr.read()
         if result_err:
-            input("openssl NOT FOUND.\r\n")
-            sys.exit()
+            msg = "openssl NOT FOUND."
+            if self.__isWindows():
+                interrupt("windows", msg)
+            else:
+                interrupt("linux", msg)
         if video_type == "TVer":
             prog_ffmpeg = subprocess.Popen(
                 "ffmpeg -version", stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
             result = prog_ffmpeg.stderr.read()
             if result:
-                input("FFMPEG NOT FOUND.\r\n")
-                sys.exit()
+                msg = "FFMPEG NOT FOUND."
+                if self.__isWindows():
+                    interrupt("windows", msg)
+                else:
+                    interrupt("linux", msg)
 
     # 检查是否地址合法性
     def __checkHost(self, types, url):
@@ -195,14 +243,12 @@ class HLSVideo(object):
         # m3u8 host
         if video_type == "GYAO":
             m3u8host = "https://" + playlist.split("/")[2] + "/"
-        elif video_type == "DMM":
+        elif video_type == "FOD":
             m3u8host = ""
             url_part = playlist.split("/")[1:-1]
             for url_p in url_part:
                 m3u8host = m3u8host + url_p + "/"
-            m3u8host = "http:/" + m3u8host
-        elif video_type == "FOD":
-            m3u8host = ""
+            m3u8host = "https:/" + m3u8host
         else:
             m3u8host = self.__checkHost("m3u8 host", m3u8kurl)
 
@@ -219,10 +265,8 @@ class HLSVideo(object):
 
         if video_type == "GYAO":
             videohost = m3u8host
-        elif video_type == "DMM":
-            videohost = m3u8host
         elif video_type == "FOD":
-            videohost = ""
+            videohost = m3u8host
         elif video_type == "Asahi" or video_type == "STchannel":
             hostlist = m3u8main.split("/")[1:-1]
             videohost = m3u8main.split("/")[0] + "//"
@@ -270,7 +314,7 @@ class HLSVideo(object):
                 # download key
                 key_num = i + 1
                 url = m3u8host + k
-                if video_type == "DMM":
+                if video_type == "FOD":
                     url = k
                 # rename key
                 keyname = str(key_num).zfill(4) + "_key"
@@ -323,7 +367,11 @@ class HLSVideo(object):
                 for chunk in r.iter_content(chunk_size=1024):
                     code.write(chunk)
         except BaseException:
-            print("[%s] is failed." % urls)
+            msg = "[%s] is failed." % urls
+            if self.__isWindows():
+                interrupt("windows", msg)
+            else:
+                interrupt("linux", msg)
 
     # 下载处理函数
     def __download(self, para):
@@ -356,8 +404,8 @@ class HLSVideo(object):
             videos.append(video_encrypt)
         total = len(video_urls)
         print("(2)GET Videos...[%s]" % total)
-        print("Please wait...")
-        thread = total / 4
+        print("--- Downloading ---")
+        thread = int(total / 4)
         # Multi-threaded configuration
         if thread > 100:
             thread = 20
@@ -370,7 +418,8 @@ class HLSVideo(object):
         # pool.join()
 
         # 多线程进度条版本
-        t = threadProcBar(self.__download, list(zip(video_urls, videos)))
+        t = threadProcBar(self.__download, list(
+            zip(video_urls, videos)), thread)
         t.worker()
         t.process()
 
@@ -407,12 +456,13 @@ class HLSVideo(object):
         folder = "decrypt_" + self.datename
         video_name = os.path.join(folder, self.datename + ".ts")
         if os.path.exists(video_name):
-            print("(4)Good!")
+            print("(4)Clean up tmp files...")
             if self.debug:
-                print(
-                    "(5)Please check [ {}/{}.ts ]".format(folder, self.datename))
+                msg = "(5)Please check [ {}/{}.ts ]".format(folder,
+                                                            self.datename)
+
             else:
-                print("(5)Please check [ {}.ts ]".format(self.datename))
+                msg = "(5)Please check [ {}.ts ]".format(self.datename)
             # 清理临时文件
             if not self.debug:
                 enpath = "encrypt_" + self.datename
@@ -427,6 +477,11 @@ class HLSVideo(object):
                 shutil.rmtree(folder)
                 if self.type == "TVer":
                     self.__concat_audio_video()
+                    msg = "Please Check [ %s_all.ts ]" % self.datename
+            if self.__isWindows():
+                interrupt("windows", msg)
+            else:
+                interrupt("linux", msg)
         else:
             self.__errorList("not_found", self.datename)
 
@@ -600,16 +655,20 @@ class HLSVideo(object):
             audios.append(audio_encrypt)
         total = len(audiourls)
         print("(SP1)GET Audios...[%s]" % total)
-        print("Please wait...")
-        thread = total / 2
+        print("--- Downloading ---")
+        thread = int(total / 2)
         if thread > 100:
             thread = 100
         else:
             thread = thread
-        pool = Pool(thread)
-        pool.map(self.__download, zip(audiourls, audios))
-        pool.close()
-        pool.join()
+        # pool = Pool(thread)
+        # pool.map(self.__download, zip(audiourls, audios))
+        # pool.close()
+        # pool.join()
+        t = threadProcBar(self.__download, list(
+            zip(audiourls, audios)), thread)
+        t.worker()
+        t.process()
         present = len(os.listdir(audio_folder))
         if present != total:
             self.__errorList("total_error", total, present)
@@ -639,11 +698,12 @@ class HLSVideo(object):
             try:
                 os.system("ffmpeg -i " + v + " -i " + a +
                           " -c copy " + self.datename + "_all.ts")
-                print("")
-                print("Please Check [ %s_all.ts ]" % self.datename)
             except BaseException:
-                print("FFMPEG ERROR.")
-                sys.exit()
+                msg = "FFMPEG ERROR."
+                if self.__isWindows():
+                    interrupt("windows", msg)
+                else:
+                    interrupt("linux", msg)
 
     def hlsRedec(self, key, encfolder):
         videos = os.listdir(encfolder)
@@ -705,6 +765,26 @@ class threadProcBar(object):
         print('')
 
 
+def interrupt(ostype, msg):
+    if ostype == "windows":
+        sys.stdout.write(msg + "\r\n")
+        sys.stdout.flush()
+        os.system("echo Press any key to Exit...")
+        os.system("pause > nul")
+    if ostype == "linux":
+        fd = sys.stdin.fileno()
+        old_ttyinfo = termios.tcgetattr(fd)
+        new_ttyinfo = old_ttyinfo[:]
+        new_ttyinfo[3] &= ~termios.ICANON
+        new_ttyinfo[3] &= ~termios.ECHO
+        sys.stdout.write(msg + "\r\n" + "Press any key to Exit..." + "\r\n")
+        sys.stdout.flush()
+        termios.tcsetattr(fd, termios.TCSANOW, new_ttyinfo)
+        os.read(fd, 7)
+        termios.tcsetattr(fd, termios.TCSANOW, old_ttyinfo)
+    sys.exit()
+
+
 def opts():
     paras = argparse.ArgumentParser(description="Download HLS video")
     paras.add_argument('-d', dest='debug', action="store_true",
@@ -713,6 +793,8 @@ def opts():
                        default=None, help="Encrypt folder")
     paras.add_argument('-k', dest='key', action="store",
                        default=None, help="Key")
+    paras.add_argument('-p', dest='proxy', action="store",
+                       default=None, type=str, help="proxy")
     args = paras.parse_args()
     return args
 
@@ -722,6 +804,7 @@ def main():
     debug = para.debug
     key = para.key
     encfolder = para.encfolder
+    proxies = para.proxy
 
     if encfolder and key:
         HLS = HLSVideo(debug=debug)
@@ -731,10 +814,17 @@ def main():
             playlist = input("Enter Playlist URL: ")
         else:
             playlist = raw_input("Enter Playlist URL: ")
-        HLS = HLSVideo(debug=debug)
-        site = HLS.hlsSite(playlist)
-        keyvideo = HLS.hlsInfo(site)
-        HLS.hlsDL(keyvideo)
+        if playlist:
+            HLS = HLSVideo(debug=debug, proxies=proxies)
+            site = HLS.hlsSite(playlist)
+            keyvideo = HLS.hlsInfo(site)
+            HLS.hlsDL(keyvideo)
+        else:
+            msg = "url invalid."
+            if 'Windows' in platform.system():
+                interrupt("windows", msg)
+            else:
+                interrupt("linux", msg)
 
 
 if __name__ == "__main__":
