@@ -168,7 +168,8 @@ class HLSVideo(object):
             "Asahi": "tv-asahi",
             "STchannel": "aka-bitis-hls-vod.uliza.jp",
             "FOD": "fod",
-            "MBS": "secure.brightcove.com"
+            "MBS": "secure.brightcove.com",
+            "FUJI": "fujitv.co.jp"
         }
         # 通过关键字判断HLS的类型
         siteRule = r'http[s]?://[\S]+'
@@ -710,7 +711,7 @@ class threadProcBar(object):
             try:
                 percent = pool.apply_async(self.__dosth, args=(i, task))
                 self.q.put(percent)
-            except BaseException as e:
+            except BaseException:
                 break
 
     def process(self):
