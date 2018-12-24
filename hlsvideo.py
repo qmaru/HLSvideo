@@ -35,6 +35,7 @@ class HLSVideo(object):
     def __init__(self, debug, proxies):
         self.keyparts = 0
         self.iv = 0
+        self.keyfile = None
         self.datename = time.strftime(
             '%y%m%d%H%M%S', time.localtime(time.time()))
         self.debug = debug
@@ -169,7 +170,8 @@ class HLSVideo(object):
             "STchannel": "aka-bitis-hls-vod.uliza.jp",
             "FOD": "fod",
             "MBS": "secure.brightcove.com",
-            "FUJI": "fujitv.co.jp"
+            "FUJI": "fujitv.co.jp",
+            "ABEMA": "vod-abematv"
         }
         # 通过关键字判断HLS的类型
         siteRule = r'http[s]?://[\S]+'
@@ -201,13 +203,16 @@ class HLSVideo(object):
     def hlsInfo(self, site):
         playlist = site[0]
         video_type = site[1]
+        if video_type == "ABEMA":
+            spec_info = """Please debug: source -> theoplayer.d.js -> var t = e.data\r\nConsole: Array.from(e.data.St, function(byte){return ('0' + (byte & 0xFF).toString(16)).slice(-2);}).join('')"""
+            print(spec_info)
         key_video = []
         # key的下载需要playlist的cookies
         response = self.__requests(playlist)
         m3u8_list_content = response.text
         cookies = response.cookies
         # 提取m3u8列表的最高分辨率的文件
-        rule_m3u8 = r"^[\w\-\.\/\:\?\&\=\%]+"
+        rule_m3u8 = r"^[\w\-\.\/\:\?\&\=\%\,\+]+"
         rule_bd = r"BANDWIDTH=([\w]+)"
         if video_type == "GYAO":
             rule_bd = r"EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=([\w]+)"
@@ -232,6 +237,12 @@ class HLSVideo(object):
         # m3u8 host
         if video_type == "GYAO":
             m3u8host = "https://" + playlist.split("/")[2] + "/"
+        elif video_type == "ABEMA":
+            hostlist = playlist.split("/")[1:-1]
+            m3u8host = playlist.split("/")[0] + "//"
+            for parts in hostlist:
+                if parts:
+                    m3u8host = m3u8host + parts + "/"
         else:
             m3u8host = self.__checkHost("m3u8 host", m3u8kurl)
 
@@ -242,7 +253,7 @@ class HLSVideo(object):
         m3u8_content = self.__requests(m3u8main).text
 
         # video host
-        rule_video = r'[^#\S+][\w\/\-\.\:\?\&\=]+'
+        rule_video = r'[^#\S+][\w\/\-\.\:\?\&\=\,\+\%]+'
         videourl = re.findall(rule_video, m3u8_content, re.S | re.M)
         videourl_check = videourl[0].strip()
 
@@ -271,6 +282,11 @@ class HLSVideo(object):
             self.iv = ''.join(iv_value).split("=")[-1][2:]
             audiohost = ""
 
+        if video_type == "ABEMA":
+            rule_iv = r'IV=[\w]+'
+            iv_value = re.findall(rule_iv, m3u8_content)
+            self.iv = ''.join(iv_value).split("=")[-1][2:]
+
         # download key and save url
         rule_key = r'URI=\"(.*?)\"'
         keyurl = re.findall(rule_key, m3u8_content)
@@ -278,35 +294,44 @@ class HLSVideo(object):
             self.__mylog("debug", "keyurl", keyurl)
 
         if keyurl:
-            # tv-asahi分片数由m3u8文件决定
-            if "tv-asahi" in m3u8main:
-                if len(keyurl) > 1:
-                    key_parts = keyurl[1].split("/")[-1].split("=")[-1]
-                    self.keyparts = int(key_parts)
-            if self.debug:
-                self.__mylog("debug", "videoparts", self.keyparts)
-            keyfolder = self.__isFolder("keys")
-            if self.debug:
-                self.__mylog("debug", "keyfolder", keyfolder)
             keylist = []
-            t = len(keyurl)
-            self.__mylog("info", "(1)GET Key", t)
-            for i, k in enumerate(keyurl):
-                # download key
-                key_num = i + 1
-                url = m3u8host + k
-                if video_type == "FOD":
-                    url = k
-                # rename key
-                keyname = str(key_num).zfill(4) + "_key"
-                keypath = os.path.join(keyfolder, keyname)
-                keylist.append(keypath)
-                r = self.__requests(url, cookies=cookies)
-                with open(keypath, "wb") as code:
-                    for chunk in r.iter_content(chunk_size=1024):
-                        code.write(chunk)
-            if os.path.getsize(keypath) != 16:
-                self.__mylog("error", "key_error", keypath)
+            # tv-asahi分片数由m3u8文件决定
+            if video_type == "ABEMA":
+                if py3:
+                    keyfile = input("Enter Hex Key: ")
+                else:
+                    keyfile = raw_input("Enter Hex Key: ")
+                self.__mylog("info", "(1)Format Key")
+                self.keyfile = keyfile
+                keylist = [keyfile]
+            else:
+                keyfolder = self.__isFolder("keys")
+                if "tv-asahi" in m3u8main:
+                    if len(keyurl) > 1:
+                        key_parts = keyurl[1].split("/")[-1].split("=")[-1]
+                        self.keyparts = int(key_parts)
+                if self.debug:
+                    self.__mylog("debug", "videoparts", self.keyparts)
+                if self.debug:
+                    self.__mylog("debug", "keyfolder", keyfolder)
+                t = len(keyurl)
+                self.__mylog("info", "(1)GET Key", t)
+                for i, k in enumerate(keyurl):
+                    # download key
+                    key_num = i + 1
+                    url = m3u8host + k
+                    if video_type == "FOD":
+                        url = k
+                    # rename key
+                    keyname = str(key_num).zfill(4) + "_key"
+                    keypath = os.path.join(keyfolder, keyname)
+                    keylist.append(keypath)
+                    r = self.__requests(url, cookies=cookies)
+                    with open(keypath, "wb") as code:
+                        for chunk in r.iter_content(chunk_size=1024):
+                            code.write(chunk)
+                if os.path.getsize(keypath) != 16:
+                    self.__mylog("error", "key_error", keypath)
             key_video.append(keylist)
             # save urls
             videourls = [videohost + v.strip() for v in videourl]
@@ -324,7 +349,7 @@ class HLSVideo(object):
                 except Exception as e:
                     raise e
         else:
-            self.__mylog("(1)info", "No key", "")
+            self.__mylog("info", "(1)No key", "")
             keypath = ""
             videourls = []
             rule_video = r'[^#\S+][\w\/\-\.\:\?\&\=]+'
@@ -477,10 +502,13 @@ class HLSVideo(object):
             ivs = range(1, len(videos) + 1)
         else:
             ivs = ivs
-        k = keypath
-        # format key
-        STkey = open(k, "rb").read()
-        KEY = binascii.b2a_hex(STkey)
+        if self.keyfile:
+            KEY = self.keyfile
+        else:
+            k = keypath
+            # format key
+            STkey = open(k, "rb").read()
+            KEY = binascii.b2a_hex(STkey)
         if py3:
             KEY = str(KEY, encoding="utf-8")
         if videoin:
