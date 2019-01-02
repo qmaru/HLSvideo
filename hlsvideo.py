@@ -509,7 +509,7 @@ class HLSVideo(object):
             # format key
             STkey = open(k, "rb").read()
             KEY = binascii.b2a_hex(STkey)
-        if py3:
+        if py3 and self.keyfile is None:
             KEY = str(KEY, encoding="utf-8")
         if videoin:
             videoin = videoin
