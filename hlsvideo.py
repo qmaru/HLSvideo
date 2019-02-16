@@ -168,7 +168,7 @@ class HLSVideo(object):
             "TVer": "manifest.prod.boltdns.net",
             "Asahi": "tv-asahi",
             "STchannel": "aka-bitis-hls-vod.uliza.jp",
-            "FOD": "fod",
+            "FOD": "i.fod.fujitv.co.jp",
             "MBS": "secure.brightcove.com",
             "FUJI": "fujitv.co.jp",
             "ABEMA": "vod-abematv"
@@ -251,15 +251,14 @@ class HLSVideo(object):
 
         m3u8main = m3u8host + m3u8kurl
         m3u8_content = self.__requests(m3u8main).text
-
         # video host
         rule_video = r'[^#\S+][\w\/\-\.\:\?\&\=\,\+\%]+'
         videourl = re.findall(rule_video, m3u8_content, re.S | re.M)
         videourl_check = videourl[0].strip()
 
-        if video_type in ["GYAO", "FOD"]:
+        if video_type in ["GYAO"]:
             videohost = m3u8host
-        elif video_type in ["Asahi", "STchannel"]:
+        elif video_type in ["Asahi", "STchannel", "FOD"]:
             hostlist = m3u8main.split("/")[1:-1]
             videohost = m3u8main.split("/")[0] + "//"
             for parts in hostlist:
