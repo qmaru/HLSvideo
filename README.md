@@ -8,14 +8,13 @@
 
 只需要提供记录m3u8列表(playlist)的地址。  
 
-手机应用请使用Fiddler获取信息。
+移动应用请使用Fiddler获取信息。
 
 ## 运行环境
 
-仅在python2.7.x / 3.5.x / 3.6.x 测试
+python 3.6.x 测试通过
 
 ## 外部工具
-[openssl](http://slproweb.com/products/Win32OpenSSL.html)（windows需要额外安装openssl）  
 [ffmpeg](http://ffmpeg.org/download.html)（某些合并需要ffmpeg）
 
 ## 参考
