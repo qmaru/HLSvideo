@@ -4,119 +4,160 @@
 # @modify date 2019-06-06 16:02:31
 # @desc [HLS downloader]
 import argparse
-import logging
-import multiprocessing
 import os
 import platform
-import queue
 import re
-import shutil
-import subprocess
-import sys
 import time
-from multiprocessing.dummy import Pool
-
-import requests
 
 from Crypto.Cipher import AES
 
-try:
-    import termios
-except ImportError:
-    pass
+from utils import tool
+from utils.concat import concat
+from utils.interrupt import interrupt
+from utils.log import log
+from utils.reqmini import Reqmini
+from utils.threadbar import threadProcBar
+
+DATENAME = time.strftime('%y%m%d%H%M%S', time.localtime(time.time()))
+WORKDIR = os.path.dirname(os.path.abspath(__file__))
 
 
-class HLSVideo(object):
+class HLSVideo():
     def __init__(self, debug, proxies):
-        self.keyparts = 0
-        self.iv = 0
-        self.keyfile = None
-        self.datename = time.strftime('%y%m%d%H%M%S', time.localtime(time.time()))
         self.debug = debug
+        self.keyparts = 1
 
-        self.type = ""
-        self.workdir = os.path.dirname(os.path.abspath(__file__))
         if proxies:
-            proxyinfo = {
-                "http": "http://" + proxies,
-                "https": "https://" + proxies
-            }
-            self.proxies = proxyinfo
+            self.reqmini = Reqmini(proxies)
         else:
-            self.proxies = None
+            self.reqmini = Reqmini()
 
-        self.Session = requests.Session()
-        self.Session.mount('https://', requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=100))
-        self.Session.mount('http://', requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=100))
+    def get_content(self, url):
+        res = self.reqmini.get(url)
+        content = res.text
+        return content
 
-    # Log 格式化
-    def __mylog(self, mode, *para):
-        logging.basicConfig(
-            level=logging.NOTSET, format='%(asctime)s - %(filename)s [%(levelname)s] %(message)s')
-        logging.getLogger("requests").setLevel(logging.WARNING)
-        logging.getLogger("urllib3").setLevel(logging.WARNING)
-        log = getattr(logging, mode)
-        para = [str(i) for i in para]
-        msg = " - ".join(para)
-        log(msg)
-
-    # requests处理
-    def session(self, url, headers=None, cookies=None, timeout=30):
-        headers = {
-            "User-Agent": "Mozilla/5.0 (iPad; CPU OS 11_0 like Mac OS X) AppleWebKit/604.1.34 (KHTML, like Gecko) Version/11.0 Mobile/15A5341f Safari/604.1"
-        }
-        if headers:
-            self.Session.headers.update(headers)
-        if cookies:
-            self.Session.cookies.update(cookies)
-        if self.proxies:
-            self.Session.proxies.update(self.proxies)
-        try:
-            response = self.Session.get(url, timeout=timeout)
-        except BaseException as e:
-            self.__mylog("error", e)
-        return response
-
-    # 检查外部应用程序
-    def __ffmpegCheck(self):
-        prog_ffmpeg = subprocess.Popen(
-            "ffmpeg -version", stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-        result = prog_ffmpeg.stderr.read()
-        if result:
-            msg = "FFMPEG NOT FOUND."
-            if self.__isWindows():
+    def get_best_video_url(self):
+        self.playlist_content = self.get_content(self.playlist)
+        # 提取m3u8列表的最高分辨率的文件
+        rule_m3u8 = r"^[\w\-\.\/\:\?\&\=\%\,\+]+"
+        rule_bd = r"BANDWIDTH=([\w]+)"
+        rule_bd_gyao = r"EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=([\w]+)"
+        # 根据码率匹配
+        if "m3u8" in self.playlist_content:
+            m3u8urls = re.findall(rule_m3u8, self.playlist_content, re.S | re.M)
+            bandwidth = re.findall(rule_bd, self.playlist_content, re.S | re.M)
+            # GYAO 特殊处理 12为估算值
+            if len(bandwidth) > 12:
+                bandwidth = re.findall(rule_bd_gyao, self.playlist_content, re.S | re.M)
+            bandwidth = [int(b) for b in bandwidth]
+            group = zip(m3u8urls, bandwidth)
+            maxband = max(group, key=lambda x: x[1])
+            m3u8best = maxband[0]
+            if self.debug:
+                log("debug", "m3u8url", m3u8best)
+            return m3u8best
+        elif "EXT-X-ENDLIST" in self.playlist_content:
+            return self.playlist
+        else:
+            msg = "URL_ERROR: {}".format(self.playlist)
+            if tool.iswindows():
                 interrupt("windows", msg)
             else:
                 interrupt("linux", msg)
 
-    # 检查地址合法性
-    def __checkHost(self, types, url):
-        if url.startswith("http"):
-            return ""
-        hostdir = input("Enter {}: ".format(types))
-        if hostdir.endswith("/"):
-            return hostdir
-        return hostdir + "/"
+    def get_best_audio_url(self):
+        audio_m3u8_rule = r'TYPE=AUDIO.*?URI=\"(.*?)\"'
+        audio_m3u8_url = re.findall(audio_m3u8_rule, self.playlist_content, re.S | re.M)
+        return audio_m3u8_url[-1]
 
-    # 以当前时间创建文件夹
-    def __isFolder(self, filename):
-        try:
-            filename = filename + "_" + self.datename
-            propath = self.workdir
-            video_path = os.path.join(propath, filename)
-            if os.path.exists(video_path):
-                return video_path
-            os.mkdir(video_path)
-            return video_path
-        except BaseException as e:
-            raise e
+    def set_m3u8_host(self, m3u8best):
+        if self.type in ["GYAO"]:
+            m3u8host = "https://" + self.playlist.split("/")[2] + "/"
+        elif self.type in ["ABEMA", "Yahoo"]:
+            uri = [_ for _ in self.playlist.split("/")[1:-1] if _]
+            m3u8host = "https://" + "/".join(uri) + "/"
+        else:
+            m3u8host = tool.check_host("m3u8 host", m3u8best)
+        return m3u8host
 
-    # 判断操作系统
-    def __isWindows(self):
-        return 'Windows' in platform.system()
+    def set_media_host(self, m3u8best=None, audio=False):
+        rule = r'[^#\S+][~\w\/\-\.\:\?\&\=\,\+\%]+'
+        if audio:
+            media_url = re.findall(rule, self.m3u8_audio_bestmatch, re.S | re.M)
+        else:
+            media_url = re.findall(rule, self.m3u8_bestmatch, re.S | re.M)
+
+        if self.type in ["GYAO"]:
+            media_host = "https://" + self.playlist.split("/")[2] + "/"
+        elif self.type in ["Asahi", "STchannel", "FOD"]:
+            uri = [_ for _ in m3u8best.split("/")[1:-1] if _]
+            media_host = "https://" + "/".join(uri) + "/"
+        else:
+            media_host = tool.check_host("video host", media_url[0].strip())
+        media_urls = [media_host + v.strip() for v in media_url]
+        return media_host, media_urls
+
+    def get_iv(self):
+        if self.type in ["ABEMA", "TVer"]:
+            rule_iv = r'IV=0x([\w]+)'
+            iv_value = re.findall(rule_iv, self.m3u8_bestmatch)
+            return "".join(iv_value)
+        else:
+            return None
+
+    def get_keyurls(self, audio=False):
+        rule_key = r'URI=\"(.*?)\"'
+        if audio:
+            keyurls = re.findall(rule_key, self.m3u8_audio_bestmatch)
+        else:
+            keyurls = re.findall(rule_key, self.m3u8_bestmatch)
+        if self.type == "Yahoo":
+            uri_part = self.playlist.split("/")
+            keyurls = [uri_part[0] + "//" + uri_part[2] + keyurls[0]]
+            return keyurls
+        keyurls = [self.set_m3u8_host(m3u8best=i) + i for i in keyurls]
+        return keyurls
+
+    def get_keystr(self, keyurls, keytype):
+        keylist = []
+        if keyurls:
+            # tv-asahi 根据 key 的数量分片
+            if "tv-asahi" in self.m3u8_bestmatch:
+                if len(keyurls) > 1:
+                    key_parts = keyurls[1].split("/")[-1].split("=")[-1]
+                    self.keyparts = int(key_parts)
+                    if self.debug:
+                        log("debug", "videoparts", self.keyparts)
+            key_num = len(keyurls)
+            log("info", "(1)GET {} Key".format(keytype), key_num)
+            key_dict = {}
+            for key_index, key_url in enumerate(keyurls):
+                keyname = str(key_index + 1).zfill(4)
+                key_binary = self.reqmini.get(key_url).content
+                if self.debug:
+                    log("debug", "keyinfo", key_binary)
+                key_dict[keyname] = key_binary
+            keylist.append(key_dict)
+            return keylist
+        else:
+            return keylist
+
+    def set_save_folder(self, data, folder_name):
+        save_path = []
+        media_folder = tool.create_folder(WORKDIR, DATENAME, folder_name)
+        if self.debug:
+            log("debug", "encfolder", media_folder)
+        # Rename the video for sorting
+        for i in range(0, len(data)):
+            media_num = i + 1
+            media_name = str(media_num).zfill(4) + ".ts"
+            media_path = os.path.join(media_folder, media_name)
+            save_path.append(media_path)
+        return media_folder, save_path
 
     # 识别HLS的类型
-    def hlsSite(self, playlist):
+    def hlsAnalyze(self, playlist):
         type_dict = {
             "GYAO": "gyao",
             "TVer": "manifest.prod.boltdns.net",
@@ -129,617 +170,246 @@ class HLSVideo(object):
         }
         # 通过关键字判断HLS的类型
         siteRule = r'http[s]?://[\S]+'
-        check = re.search(siteRule, playlist)
-        if check:
+        check_url = re.search(siteRule, playlist)
+        if check_url:
             for site, keyword in type_dict.items():
                 if keyword in playlist:
                     video_type = site
                     break
-                type_check = self.session(playlist).text
+                type_check = self.reqmini.get(playlist).text
                 if keyword in type_check:
                     video_type = site
                     break
             else:
                 video_type = None
             if video_type == "TVer":
-                self.__ffmpegCheck()
+                tool.ffmpeg_check()
+            if video_type in ["GYAO", "MBS"]:
+                self.keyparts = 10
+            if video_type == "ABEMA":
+                spec_info = """Please debug: source -> theoplayer.d.js -> var t = e.data\r\nConsole: Array.from(e.data.N8, function(byte){return ('0' + (byte & 0xFF).toString(16)).slice(-2);}).join('')"""
+                print(spec_info)
             self.type = video_type
+            self.playlist = playlist
+            log("info", "Media Type: {}".format(video_type))
             if self.debug:
-                self.__mylog("debug", video_type, playlist)
+                log("debug", video_type, playlist)
             return playlist, video_type
         else:
             msg = "URL Invalid"
-            if self.__isWindows():
+            if tool.iswindows():
                 interrupt("windows", msg)
             else:
                 interrupt("linux", msg)
 
     # 根据类型做不同的处理 下载key并提取video列表
-    def hlsInfo(self, site):
-        playlist = site[0]
-        video_type = site[1]
-        if video_type == "ABEMA":
-            spec_info = """Please debug: source -> theoplayer.d.js -> var t = e.data\r\nConsole: Array.from(e.data.N8, function(byte){return ('0' + (byte & 0xFF).toString(16)).slice(-2);}).join('')"""
-            print(spec_info)
-        key_video = []
-        # key的下载需要playlist的cookies
-        response = self.session(playlist)
-        m3u8_list_content = response.text
-        cookies = response.cookies
-        # 提取m3u8列表的最高分辨率的文件
-        rule_m3u8 = r"^[\w\-\.\/\:\?\&\=\%\,\+]+"
-        rule_bd = r"BANDWIDTH=([\w]+)"
-        if video_type == "GYAO":
-            rule_bd = r"EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=([\w]+)"
-        # 根据码率匹配
-        if "m3u8" in m3u8_list_content:
-            m3u8urls = re.findall(rule_m3u8, m3u8_list_content, re.S | re.M)
-            bandwidth = re.findall(rule_bd, m3u8_list_content, re.S | re.M)
-            bandwidth = [int(b) for b in bandwidth]
-            group = zip(m3u8urls, bandwidth)
-            maxband = max(group, key=lambda x: x[1])
-            m3u8kurl = maxband[0]
-            if self.debug:
-                self.__mylog("debug", "m3u8url", m3u8kurl)
-        else:
-            msg = "URL_ERROR: {}".format(playlist)
-            if self.__isWindows():
-                interrupt("windows", msg)
-            else:
-                interrupt("linux", msg)
+    def hlsInfo(self):
+        key_video = {}
 
-        # clip
-        if video_type in ["GYAO", "MBS"]:
-            self.keyparts = 10
+        # 获取 m3u8 播放列表最佳分辨率的地址
+        m3u8best = self.get_best_video_url()
 
-        # m3u8 host
-        if video_type in ["GYAO"]:
-            m3u8host = "https://" + playlist.split("/")[2] + "/"
-        elif video_type in ["ABEMA", "Yahoo"]:
-            uri = [_ for _ in playlist.split("/")[1:-1] if _]
-            m3u8host = "https://" + "/".join(uri) + "/"
-        else:
-            m3u8host = self.__checkHost("m3u8 host", m3u8kurl)
+        # 设置 m3u8 的 host
+        m3u8host = self.set_m3u8_host(m3u8best=m3u8best)
+        if self.debug:
+            log("debug", "m3u8host", m3u8host)
+
+        m3u8_best_url = m3u8host + m3u8best
+        self.m3u8_bestmatch = self.get_content(m3u8_best_url)
+
+        # 设置 video 的 host 并获取视频列表
+        videohost, videourls = self.set_media_host(m3u8best=m3u8best)
+        if self.debug:
+            log("debug", "videohost", videohost)
 
         if self.debug:
-            self.__mylog("debug", "m3u8", m3u8host)
+            log("debug", "videourls", videourls[0])
 
-        m3u8main = m3u8host + m3u8kurl
-        m3u8_content = self.session(m3u8main).text
-
-        # video host
-        rule_video = r'[^#\S+][\w\/\-\.\:\?\&\=\,\+\%]+'
-        videourl = re.findall(rule_video, m3u8_content, re.S | re.M)
-        videourl_check = videourl[0].strip()
-
-        if video_type in ["GYAO"]:
-            videohost = m3u8host
-        elif video_type in ["Asahi", "STchannel", "FOD"]:
-            uri = [_ for _ in m3u8main.split("/")[1:-1] if _]
-            videohost = "https://" + "/".join(uri) + "/"
-        else:
-            videohost = self.__checkHost("video host", videourl_check)
+        self.iv = self.get_iv()
+        if self.debug:
+            log("debug", "videoiv", self.iv)
+        video_keyurls = self.get_keyurls()
 
         if self.debug:
-            self.__mylog("debug", "videohost", videohost)
+            log("debug", "video keyurl", video_keyurls[0])
 
-        # TVer audio rule [ Only need audio links ]
-        if video_type == "TVer":
-            audio_rule = r'TYPE=AUDIO(.*?)URI=\"(.*?)\"'
-            audio_m3u8_url = re.findall(audio_rule, m3u8_list_content)[-1][-1]
-            audio_content = self.session(audio_m3u8_url).text
-            audiourl = re.findall(rule_video, audio_content, re.S | re.M)
-            rule_iv = r'IV=0x([\w]+)'
-            iv_value = re.findall(rule_iv, m3u8_content)
-            self.iv = "".join(iv_value)
-            audiohost = ""
-
-        if video_type == "ABEMA":
-            rule_iv = r'IV=0x([\w]+)'
-            iv_value = re.findall(rule_iv, m3u8_content)
-            self.iv = "".join(iv_value)
-
-        # download key and save url
-        rule_key = r'URI=\"(.*?)\"'
-        keyurl = re.findall(rule_key, m3u8_content)
-
-        if self.debug:
-            self.__mylog("debug", "keyurl", keyurl[0])
-
-        if video_type == "Yahoo":
-            uri_part = playlist.split("/")
-            keyurl = [uri_part[0] + "//" + uri_part[2] + keyurl[0]]
-
-        if keyurl:
-            keylist = []
-            # tv-asahi分片数由m3u8文件决定
-            if video_type == "ABEMA":
-                keyfile = input("Enter Hex Key: ")
-                self.__mylog("info", "(1)Format Key", keyfile)
-                self.keyfile = keyfile
-                keylist = [keyfile]
-            else:
-                keyfolder = self.__isFolder("keys")
-                if "tv-asahi" in m3u8main:
-                    if len(keyurl) > 1:
-                        key_parts = keyurl[1].split("/")[-1].split("=")[-1]
-                        self.keyparts = int(key_parts)
-                if self.debug:
-                    self.__mylog("debug", "videoparts", self.keyparts)
-                    self.__mylog("debug", "keyfolder", keyfolder)
-                t = len(keyurl)
-                self.__mylog("info", "(1)GET Key", t)
-                for i, k in enumerate(keyurl):
-                    # download key
-                    key_num = i + 1
-                    url = m3u8host + k
-                    if video_type in ["FOD", "Yahoo"]:
-                        url = k
-                    # rename key
-                    keyname = str(key_num).zfill(4) + "_key"
-                    keypath = os.path.join(keyfolder, keyname)
-                    keylist.append(keypath)
-                    r = self.session(url, cookies=cookies)
-                    with open(keypath, "wb") as code:
-                        for chunk in r.iter_content(chunk_size=1024):
-                            code.write(chunk)
-                if os.path.getsize(keypath) != 16:
-                    self.__mylog("error", "key_error", keypath)
-            key_video.append(keylist)
-            # save urls
-            videourls = [videohost + v.strip() for v in videourl]
-            if self.debug:
-                self.__mylog("debug", "videourls", videourls[0])
-            key_video.append(videourls)
-            # TVer audio url
-            if video_type == "TVer":
-                key_audio = []
-                audiourls = [audiohost + a.strip() for a in audiourl]
-                key_audio.append(keylist)
-                key_audio.append(audiourls)
-                try:
-                    self.__tverdl(key_audio)
-                except Exception as e:
-                    raise e
+        if self.type == "ABEMA":
+            keyfile = input("Enter Hex Key: ")
+            log("info", "(1)Format Key", keyfile)
+            videokeys = [
+                {
+                    "0001": bytes.fromhex(keyfile)
+                }
+            ]
         else:
-            self.__mylog("info", "(1)No key", "")
-            keypath = ""
-            videourls = []
-            rule_video = r'[^#\S+][\w\/\-\.\:\?\&\=]+'
-            # save urls
-            videourl = re.findall(rule_video, m3u8_content, re.S | re.M)
-            videourl_check = videourl[0].strip()
-            videohost = self.__checkHost("video host", videourl_check)
-            videourls = [videohost + v.strip() for v in videourl]
+            videokeys = self.get_keystr(video_keyurls, "video")
+
+        # 获取 m3u8 播放列表最佳音频地址
+        if self.type == "TVer" and self.iv != "":
+            m3u8_best_audio_url = self.get_best_audio_url()
+            self.m3u8_audio_bestmatch = self.get_content(m3u8_best_audio_url)
+            audiohost, audiourls = self.set_media_host(audio=True)
+            self.iv_audio = self.get_iv()
+            audio_keyurls = self.get_keyurls(audio=True)
+            audiokeys = self.get_keystr(audio_keyurls, "audio")
             if self.debug:
-                self.__mylog("debug", "videourls", videourls[0])
-            key_video.append(keypath)
-            key_video.append(videourls)
+                log("debug", "audiohost", audiohost)
+                log("debug", "audiourls", audiourls[0])
+                log("debug", "audioiv", self.iv_audio)
+        else:
+            audiourls = None
+            audiokeys = None
+
+        key_video["vurls"] = videourls
+        key_video["vkeys"] = videokeys
+        key_video["aurls"] = audiourls
+        key_video["akeys"] = audiokeys
         return key_video
 
-    # 下载重试函数
-    def __retry(self, urls, files):
-        try:
-            self.__mylog("info", "Retrying...", "")
-            r = self.session(urls)
-            with open(files, "wb") as code:
-                for chunk in r.iter_content(chunk_size=1024):
-                    code.write(chunk)
-        except BaseException:
-            msg = "[%s] is failed." % urls
-            if self.__isWindows():
-                interrupt("windows", msg)
-            else:
-                interrupt("linux", msg)
-
-    # 下载处理函数
-    def __download(self, para):
-        urls = para[0]
-        files = para[1]
-        try:
-            r = self.session(urls)
-            with open(files, "wb") as code:
-                for chunk in r.iter_content(chunk_size=1024):
-                    code.write(chunk)
-        except BaseException:
-            self.__retry(urls, files)
-
-    # 下载函数
-    def hlsDL(self, key_video):
-        key_video = key_video
-        # Check the number of keys
-        key_path = [''.join(kv) for kv in key_video[0]]
-        key_num = len(key_path)
-        video_urls = key_video[1]
-        # 视频保存路径列表
-        videos = []
-        video_folder = self.__isFolder("encrypt")
-        if self.debug:
-            self.__mylog("debug", "encfolder", video_folder)
-        # Rename the video for sorting
-        for i in range(0, len(video_urls)):
-            video_num = i + 1
-            video_name = str(video_num).zfill(4) + ".ts"
-            video_encrypt = os.path.join(video_folder, video_name)
-            videos.append(video_encrypt)
-        total = len(video_urls)
-        self.__mylog("info", "(2)GET Videos", total)
-        self.__mylog("info", "--- Downloading ---")
+    def set_download(self, media_prefix, media_save_path, urls, mediatype):
+        total = len(urls)
+        log("info", "(2)GET {}".format(mediatype), total)
+        log("info", "--- Downloading ---")
         thread = int(total // 4)
-        # Multi-threaded configuration
         if thread > 100:
             thread = 20
         else:
             thread = 10
-        # 多线程无进度条
-        # pool = Pool(thread)
-        # pool.map(self.__download, zip(video_urls, videos))
-        # pool.close()
-        # pool.join()
-
-        # 多线程进度条版本
-        t = threadProcBar(self.__download, list(
-            zip(video_urls, videos)), thread)
+        t = threadProcBar(self.reqmini.download, list(zip(urls, media_save_path)), thread)
         t.worker()
         t.process()
-
-        present = len(os.listdir(video_folder))
-        # 比较总量和实际下载数
+        present = len(os.listdir(media_prefix))
         if present != total:
-            self.__mylog("error", "total_error", present + "/" + total)
+            log("error", "total_error", present + "/" + total)
+            exit()
+
+    # 下载函数
+    def hlsDL(self, key_video):
+        vurls = key_video["vurls"]
+        vkeys = key_video["vkeys"]
+        aurls = key_video["aurls"]
+        akeys = key_video["akeys"]
+        if aurls and akeys:
+            # 音频保存路径列表
+            audio_prefix, audios_save_path = self.set_save_folder(aurls, "encrypt_audio")
+            self.set_download(audio_prefix, audios_save_path, aurls, "audio")
+            self.hlsDec(akeys, audios_save_path,  "decrypt_audio")
+
+        # 视频保存路径列表
+        video_prefix, videos_save_path = self.set_save_folder(vurls, "encrypt_video")
+        self.set_download(video_prefix, videos_save_path, vurls, "video")
+
+        # Check the number of keys
+        key_num = len(vkeys)
+
         # 有key则调用解密函数
-        if key_path:
-            # 只有1个key调用hlsDec
-            if key_num == 1:
-                key_path = ''.join(key_path)
-                try:
-                    self.__mylog("info", "(3)Decrypting...")
-                    self.hlsDec(key_path, videos)
-                except Exception as e:
-                    raise e
-            # hlsPartition
-            else:
-                try:
-                    self.__mylog("info", "(3)Decrypting...")
-                    self.hlsPartition(key_path, videos)
-                except Exception as e:
-                    raise e
+        if key_num != 0:
+            log("info", "(3)Decrypting...")
+            self.hlsDec(vkeys, videos_save_path, "decrypt_video")
         # 无key则直接合并视频
         else:
-            try:
-                self.__mylog("info", "(3)Decrypting...")
-                self.hlsConcat(videos)
-            except Exception as e:
-                raise e
+            log("info", "(3)Unencrypted...Merging...")
+            self.hlsConcat(videos_save_path, "encrypt_video")
 
-        # 后置处理 删除临时文件
-        folder = "decrypt_" + self.datename
-        video_name = os.path.join(folder, self.datename + ".ts")
-        if os.path.exists(video_name):
-            self.__mylog("info", "(4)Clean up tmp files...")
-            if self.debug:
-                msg = "Please check [ {}/{}.ts ]".format(folder, self.datename)
-            else:
-                msg = "Please check [ {}.ts ]".format(self.datename)
-            # 清理临时文件
-            if not self.debug:
-                enpath = "encrypt_" + self.datename
-                kpath = "keys_" + self.datename
-                os.chmod(folder, 128)
-                os.chmod(enpath, 128)
-                if os.path.exists(kpath):
-                    os.chmod(kpath, 128)
-                    shutil.rmtree(kpath)
-                shutil.rmtree(enpath)
-                shutil.copy(video_name, self.workdir)
-                shutil.rmtree(folder)
-                if self.type == "TVer":
-                    self.__concat_audio_video()
-                    msg = "Please Check [ %s_all.ts ]" % self.datename
-            if self.__isWindows():
-                interrupt("windows", msg)
-            else:
-                interrupt("linux", msg)
-        else:
-            self.__mylog("error", "not_found", self.datename)
+        self.data_check()
 
-    def __aes_dec(self, data, key, iv):
+    def decrypt_media(self, data, key, iv):
         cryptor = AES.new(key, AES.MODE_CBC, iv)
         data_dec = cryptor.decrypt(data)
         return data_dec
 
     # 视频解密函数
-    def hlsDec(self, keypath, videos, outname=None, ivs=None, videoin=None):
-        if outname is None:
-            outname = self.datename + ".ts"
-        else:
-            outname = outname
-        videos = videos
-        indexs = range(0, len(videos))
-        # 判断iv值，为空则序列化视频下标，否则用给定的iv值
-        if ivs is None:
-            ivs = range(1, len(videos) + 1)
-        else:
-            ivs = ivs
-        if self.keyfile:
-            KEY = bytes.fromhex(self.keyfile)
-        else:
-            k = keypath
-            KEY = open(k, "rb").read()
-        if videoin:
-            videoin = videoin
-        else:
-            videoin = self.__isFolder("encrypt")
-        videoout = self.__isFolder("decrypt")
-        new_videos = []
-        # Decrypt the video
-        for index in indexs:
-            inputV = videos[index]
-            iv = ivs[index]
-            if self.__isWindows():
-                outputV = videos[index].split("\\")[-1] + "_dec.ts"
-            else:
-                outputV = videos[index].split("/")[-1] + "_dec.ts"
-            # format iv
-            if self.iv != 0:
-                iv = bytes.fromhex(self.iv)
-            else:
-                iv = bytes.fromhex('%032x' % iv)
-            inputVS = os.path.join(videoin, inputV)
-            outputVS = os.path.join(videoout, outputV)
-            # 解密命令 核心命令
-            with open(inputVS, "rb") as vin, open(outputVS, "wb") as vout:
-                output_dec = self.__aes_dec(vin.read(), KEY, iv)
-                vout.write(output_dec)
-            # command = "openssl aes-128-cbc -d -in {input} -out {output} -nosalt -iv {iv} -K {key}".format(
-            #     input=inputVS, output=outputVS, iv=iv, key=KEY)
-            # p = subprocess.Popen(command, stderr=subprocess.PIPE, shell=True)
-            # result = p.stderr.read()
-            # if result:
-            #     if self.debug:
-            #         self.__mylog("info", "video", inputV)
-            #         self.__mylog("info", "IV", iv)
-            #         self.__mylog("info", "KEY", KEY)
-            #         self.__mylog("debug", "deccmd", command)
-            #     self.__mylog("error", "dec_error", videoin)
-            new_videos.append(outputVS)
-        self.hlsConcat(new_videos, outname)
+    def hlsDec(self, keys, media, folder_prefix):
+        key_num = len(keys)
+        media_num = len(media)
 
-    # 合并处理函数
-    def __concat(self, ostype, inputv, outputv):
-        if ostype == "windows":
-            os.system("copy /B " + inputv + " " + outputv + " >nul 2>nul")
-        elif ostype == "linux":
-            os.system("cat " + inputv + " >" + outputv)
-
-    # windows特殊处理
-    def __longcmd(self, videolist, videofolder, videoput):
-        videolist = videolist
-        total = len(videolist)
-        # 将cmd的命令切割
-        cut = 50
-        part = total // cut
-        parts = []
-        temp = []
-        for v in videolist:
-            temp.append(v)
-            if len(temp) == cut:
-                parts.append(temp)
-                temp = []
-            if len(parts) == part:
-                parts.append(temp)
-        outputs = []
-        for index, p in enumerate(parts):
-            stream = ""
-            outputname = "out_" + str(index + 1) + ".ts"
-            outputpath = os.path.join(videofolder, outputname)
-            outputs.append(outputpath)
-            for i in p:
-                stream += i + "+"
-            videoin = stream[:-1]
-            self.__concat("windows", videoin, outputpath)
-        flag = ""
-        for output in outputs:
-            flag += output + "+"
-        videoin_last = flag[:-1]
-        self.__concat("windows", videoin_last, videoput)
+        dec_media = []
+        video_save_folder = tool.create_folder(WORKDIR, DATENAME, folder_prefix)
+        # 只有一个 key
+        if self.keyparts == 1:
+            for i in range(0, key_num):
+                keys = keys[i]
+                for key_binary in keys.values():
+                    indexs = range(0, media_num)
+                    for index in indexs:
+                        input_media = media[index]
+                        if self.iv:
+                            iv = bytes.fromhex(self.iv)
+                        else:
+                            iv = bytes.fromhex('%032x' % index)
+                        if tool.iswindows():
+                            output_media_name = media[index].split("\\")[-1] + "_dec.ts"
+                        else:
+                            output_media_name = media[index].split("/")[-1] + "_dec.ts"
+                        output_media = os.path.join(video_save_folder, output_media_name)
+                        dec_media.append(output_media)
+                        with open(input_media, "rb") as vin, open(output_media, "wb") as vout:
+                            output_dec = self.decrypt_media(vin.read(), key_binary, iv)
+                            vout.write(output_dec)
+            self.hlsConcat(dec_media, folder_prefix)
+        # 多个 key
+        else:
+            if self.keyparts > 0:
+                parts_s = int(self.keyparts)
+            else:
+                parts_s = int(round((media_num) / float(key_num)))
+            output_media_part = []
+            for key in range(0, key_num):
+                for key_binary in keys.values():
+                    index_s = key * parts_s
+                    index_e = index_s + parts_s
+                    indexs = range(index_s + 1, index_e + 1)
+                    for index in indexs:
+                        input_media = media[index]
+                        if self.iv:
+                            iv = bytes.fromhex(self.iv)
+                        else:
+                            iv = bytes.fromhex('%032x' % index)
+                        if tool.iswindows():
+                            tmp_output_media_name = "video_" + media[index].split("\\")[-1] + "_dec.ts"
+                        else:
+                            tmp_output_media_name = "video_" + media[index].split("/")[-1] + "_dec.ts"
+                        output_media = os.path.join(video_save_folder, tmp_output_media_name)
+                        with open(input_media, "rb") as vin, open(output_media, "wb") as vout:
+                            output_dec = self.__aes_dec(vin.read(), key_binary, iv)
+                            vout.write(output_dec)
+                        output_media_part.append(output_media)
+            self.hlsConcat(output_media_part, folder_prefix)
 
     # 视频合并函数
-    def hlsConcat(self, videolist, outname=None):
-        if outname is None:
-            outname = self.datename + ".ts"
+    def hlsConcat(self, videolist, folder_prefix):
+        video_folder = tool.create_folder(WORKDIR, DATENAME, folder_prefix)
+        videoput = os.path.join(video_folder, "{}_{}.ts".format(folder_prefix, DATENAME))
+        if tool.iswindows():
+            concat(videolist, video_folder, videoput, "windows")
         else:
-            outname = outname
-        videolist = videolist
-        stream = ""
-        # 解密视频路径
-        video_folder = self.__isFolder("decrypt")
-        videoput = os.path.join(video_folder, outname)
-        # Windows的合并命令
-        if self.__isWindows():
-            if len(videolist) >= 50:
-                self.__longcmd(videolist, video_folder, videoput)
-            else:
-                for v in videolist:
-                    stream += v + "+"
-                videoin = stream[:-1]
-                self.__concat("windows", videoin, videoput)
-        # Liunx的合并命令
-        else:
-            for v in videolist:
-                stream += v + " "
-            videoin = stream[:-1]
-            self.__concat("linux", videoin, videoput)
+            concat(videolist, video_folder, videoput, "linux")
+        tool.data_transfer(videoput, WORKDIR)
 
-    # 多key解密函数
-    def hlsPartition(self, keypath, videos):
-        keypath = keypath
-        videos = videos
-        key_num = len(keypath)
-        video_num = len(videos)
-        if self.keyparts > 0:
-            parts_s = int(self.keyparts)
+    def data_check(self):
+        if self.type == "TVer" and self.iv != "":
+            if self.iv != 0:
+                log("info", "(4)Merging Meida...")
+                tver_video = os.path.join(WORKDIR, "decrypt_video_{}.ts".format(DATENAME))
+                tver_audio = os.path.join(WORKDIR, "decrypt_audio_{}.ts".format(DATENAME))
+                tver_output = os.path.join(WORKDIR, DATENAME + "_all.ts")
+                tool.ffmpeg_concat(tver_video, tver_audio, tver_output)
+                msg = "Please Check [ {} ]".format(tver_output)
+                if not self.debug:
+                    encpath_audio = os.path.join(WORKDIR, "encrypt_audio_{}".format(DATENAME))
+                    decpath_audio = os.path.join(WORKDIR, "decrypt_audio_{}".format(DATENAME))
+                    tool.clean_cache(encpath_audio, decpath_audio)
         else:
-            # 根据视频数和key数分片
-            parts_s = int(round((video_num) / float(key_num)))
-        # ditc[key]=list[videos] 一个key对应多个video
-        for i in range(0, key_num):
-            out_num = i + 1
-            key = keypath[i]
-            outname = "video_" + str(out_num).zfill(4) + ".ts"
-            index_s = i * parts_s
-            index_e = index_s + parts_s
-            ivs = range(index_s + 1, index_e + 1)
-            video_mvs = videos[index_s:index_e]
-            self.hlsDec(key, video_mvs, outname, ivs)
-            time.sleep(0.1)
-        folder = "decrypt_" + self.datename
-        decvideos = os.listdir(folder)
-        devs = [decv for decv in decvideos if decv.startswith("video_")]
-        devs_path = [os.path.join(self.workdir, folder, dp) for dp in devs]
-        try:
-            self.hlsConcat(devs_path)
-        except Exception as e:
-            raise e
-
-    # TVer audio 基本上和hlsDL一致
-    def __tverdl(self, keyaudio):
-        keyaudio = keyaudio
-        keypath = keyaudio[0]
-        audiourls = keyaudio[1]
-        audio_folder = self.__isFolder("encrypt_audio")
-        audios = []
-        # Rename the video for sorting
-        for i in range(0, len(audiourls)):
-            audio_num = i + 1
-            audio_name = str(audio_num).zfill(4) + ".ts"
-            audio_encrypt = os.path.join(audio_folder, audio_name)
-            audios.append(audio_encrypt)
-        total = len(audiourls)
-        self.__mylog("info", "(SP1)GET Audios", total)
-        self.__mylog("info", "--- Downloading ---")
-        thread = int(total / 2)
-        if thread > 100:
-            thread = 100
-        else:
-            thread = thread
-        # pool = Pool(thread)
-        # pool.map(self.__download, zip(audiourls, audios))
-        # pool.close()
-        # pool.join()
-        t = threadProcBar(self.__download, list(
-            zip(audiourls, audios)), thread)
-        t.worker()
-        t.process()
-        present = len(os.listdir(audio_folder))
-        if present != total:
-            self.__mylog("error", "total_error", present + "/" + total)
-        # Audio merge
-        audio_file = self.datename + "_audio.ts"
-        if keypath:
-            keypath = ''.join(keypath)
-            self.hlsDec(keypath, audios, audio_file)
-        folder_audio = "decrypt_" + self.datename
-        audioname = os.path.join(folder_audio, audio_file)
-        if os.path.exists(folder_audio):
-            self.__mylog("info", "(SP1)Audio Complete")
+            media_path = os.path.join(WORKDIR, "decrypt_video_{}.ts".format(DATENAME))
+            msg = "Please Check [ {} ]".format(media_path)
         if not self.debug:
-            enpath = "encrypt_audio_" + self.datename
-            os.chmod(folder_audio, 128)
-            os.chmod(enpath, 128)
-            shutil.rmtree(enpath)
-            shutil.copy(audioname, self.workdir)
-            shutil.rmtree(folder_audio)
-
-    # TVer video/audio merge
-    def __concat_audio_video(self):
-        if self.iv != 0:
-            # TVer音视频合并
-            v = os.path.join(self.workdir, self.datename + ".ts")
-            a = os.path.join(self.workdir, self.datename + "_audio.ts")
-            try:
-                os.system("ffmpeg -i " + v + " -i " + a +
-                          " -c copy " + self.datename + "_all.ts")
-            except BaseException:
-                msg = "FFMPEG ERROR."
-                if self.__isWindows():
-                    interrupt("windows", msg)
-                else:
-                    interrupt("linux", msg)
-
-
-# 多线程进度条
-class threadProcBar(object):
-    def __init__(self, func, tasks, pool=multiprocessing.cpu_count()):
-        self.func = func
-        self.tasks = tasks
-
-        self.bar_i = 0
-        self.bar_len = 50
-        self.bar_max = len(tasks)
-
-        self.p = Pool(pool)
-        self.q = queue.Queue()
-
-    def __dosth(self, percent, task):
-        if percent == self.bar_max:
-            return self.done
+            encpath_video = os.path.join(WORKDIR, "encrypt_video_{}".format(DATENAME))
+            decpath_video = os.path.join(WORKDIR, "decrypt_video_{}".format(DATENAME))
+            tool.clean_cache(encpath_video, decpath_video)
+        if tool.iswindows():
+            interrupt("windows", msg)
         else:
-            self.func(task)
-            return percent
-
-    def worker(self):
-        pool = self.p
-        for i, task in enumerate(self.tasks):
-            try:
-                percent = pool.apply_async(self.__dosth, args=(i, task))
-                self.q.put(percent)
-            except BaseException:
-                break
-
-    def process(self):
-        pool = self.p
-        while 1:
-            result = self.q.get().get()
-            if result == self.bar_max:
-                self.bar_i = self.bar_max
-            else:
-                self.bar_i += 1
-            num_arrow = int(self.bar_i * self.bar_len / self.bar_max)
-            num_line = self.bar_len - num_arrow
-            percent = self.bar_i * 100.0 / self.bar_max
-            process_bar = '[' + '>' * num_arrow + '-' * \
-                num_line + ']' + '%.2f' % percent + '%' + '\r'
-            sys.stdout.write(process_bar)
-            sys.stdout.flush()
-            if result == self.bar_max-1:
-                pool.terminate()
-                break
-        pool.join()
-        self.__close()
-
-    def __close(self):
-        print('')
-
-
-def interrupt(ostype, msg):
-    if ostype == "windows":
-        sys.stdout.write(msg + "\r\n")
-        sys.stdout.flush()
-        os.system("echo Press any key to Exit...")
-        os.system("pause > nul")
-    if ostype == "linux":
-        fd = sys.stdin.fileno()
-        old_ttyinfo = termios.tcgetattr(fd)
-        new_ttyinfo = old_ttyinfo[:]
-        new_ttyinfo[3] &= ~termios.ICANON
-        new_ttyinfo[3] &= ~termios.ECHO
-        sys.stdout.write(msg + "\r\n" + "Press any key to Exit..." + "\r\n")
-        sys.stdout.flush()
-        termios.tcsetattr(fd, termios.TCSANOW, new_ttyinfo)
-        os.read(fd, 7)
-        termios.tcsetattr(fd, termios.TCSANOW, old_ttyinfo)
-    sys.exit()
+            interrupt("linux", msg)
 
 
 def opts():
@@ -758,8 +428,8 @@ def main():
     playlist = input("Enter Playlist URL: ")
     if playlist:
         HLS = HLSVideo(debug=debug, proxies=proxies)
-        site = HLS.hlsSite(playlist)
-        keyvideo = HLS.hlsInfo(site)
+        HLS.hlsAnalyze(playlist)
+        keyvideo = HLS.hlsInfo()
         HLS.hlsDL(keyvideo)
     else:
         msg = "URL Invalid."
