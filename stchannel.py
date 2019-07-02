@@ -10,6 +10,7 @@ import os
 import platform
 import re
 import shutil
+import sys
 import time
 from multiprocessing.dummy import Pool
 
@@ -17,7 +18,7 @@ import requests
 from Crypto.Cipher import AES
 
 SESSION = requests.Session()
-WORKDIR = os.path.dirname(os.path.abspath(__file__))
+WORKDIR = os.path.dirname(os.path.realpath(sys.argv[0]))
 DATENAME = time.strftime('%y%m%d%H%M%S', time.localtime(time.time()))
 TOKEN_FILE = os.path.join(WORKDIR, ".token.json")
 
