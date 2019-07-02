@@ -19,7 +19,6 @@ from Crypto.Cipher import AES
 
 SESSION = requests.Session()
 WORKDIR = os.path.dirname(os.path.realpath(sys.argv[0]))
-DATENAME = time.strftime('%y%m%d%H%M%S', time.localtime(time.time()))
 TOKEN_FILE = os.path.join(WORKDIR, ".token.json")
 
 
@@ -85,7 +84,7 @@ class STchannelAPI():
             set_token(token)
             return token
 
-    def get_info(self):
+    def get_info(self, since_id=None, since_order=999):
         token = self.auth_token()
         log("info", "[02] Token: {}".format(token))
         header_auth = self.headers.copy()
@@ -96,6 +95,9 @@ class STchannelAPI():
             "since_order": 0,
             "sort": "order"
         }
+        if since_id:
+            api_param["since_id"] = since_id
+            api_param["since_order"] = since_order
         log("info", "[03] Get movie information with API...")
         response = SESSION.get(
             self.movie_api, headers=header_auth, params=api_param, timeout=30)
@@ -112,14 +114,15 @@ class STchannelAPI():
 
     def get_movie_url(self, movie_info):
         st_info = []
-        for index, value in enumerate(movie_info["movies"]):
+        for m_info in movie_info["movies"]:
             st_new = {}
-            st_title = value["title"].strip()
-            st_movie = requests.utils.unquote(value["movie_url_everyone"]).replace(
+            st_title = m_info["title"].strip()
+            st_movie = requests.utils.unquote(m_info["movie_url_everyone"]).replace(
                 "ulizasekailab", "https").replace("videoquery=", "")
-            st_thumbnail = value["thumbnail_path"]
-            st_date = self.__dformat(value["publish_start_date"])
-            st_new["index"] = str(index + 1)
+            st_thumbnail = m_info["thumbnail_path"]
+            st_date = self.__dformat(m_info["publish_start_date"])
+            st_new["order"] = m_info["order"]
+            st_new["id"] = m_info["id"]
             st_new["title"] = st_title
             st_new["movie_url"] = st_movie
             st_new["picture_url"] = st_thumbnail
@@ -130,6 +133,7 @@ class STchannelAPI():
 
 class HLSdownload():
     def __init__(self):
+        self.DATENAME = time.strftime('%y%m%d%H%M%S', time.localtime(time.time()))
         self.headers = {
             "User-Agent": "UlizaPlayer_Android/2.5.2 (Android/7.1.1; E6533; Build/32.4.A.0.160; Radio/8994-FAAAANAZQ-00028-36)"
         }
@@ -144,7 +148,7 @@ class HLSdownload():
         return SESSION.get(url, headers=self.headers).content
 
     def create_folder(self, name):
-        unique_name = "{}_{}".format(DATENAME, name)
+        unique_name = "{}_{}".format(self.DATENAME, name)
         save_path = os.path.join(WORKDIR, unique_name)
         if os.path.exists(save_path):
             return save_path
@@ -198,7 +202,7 @@ class HLSdownload():
     def __concat(self, save_path):
         log("info", "[09] Merge video...")
         videos = [os.path.join(save_path, v) for v in os.listdir(save_path)]
-        output_video = os.path.join(WORKDIR, "{}.ts".format(DATENAME))
+        output_video = os.path.join(WORKDIR, "{}.ts".format(self.DATENAME))
         if "Windows" in platform.system():
             input_video = "+".join(videos)
             cmd = "copy /B {} {} >nul 2>nul".format(input_video, output_video)
@@ -209,7 +213,7 @@ class HLSdownload():
 
         os.chmod(save_path, 128)
         shutil.rmtree(save_path)
-        log("info", "[10] Finished. Check {}.ts".format(DATENAME))
+        log("info", "[10] Finished. Check {}.ts".format(self.DATENAME))
 
     def run(self, key_video):
         log("info", "[08] Downloading... & Decrypting...")
@@ -234,6 +238,7 @@ def main():
     hls = HLSdownload()
     movie_info = api.get_info()
     movie_urls = api.get_movie_url(movie_info)
+    # since_id = min(tuple([_["id"] for _ in movie_urls]))
     for movie in movie_urls:
         url = movie["movie_url"]
         key_video = hls.get_best_info(url)

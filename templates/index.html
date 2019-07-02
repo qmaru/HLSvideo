@@ -35,6 +35,10 @@
             margin: 16px;
         }
 
+        .load {
+            padding: 16px;
+        }
+
         .leftp {
             text-align: left;
         }
@@ -78,6 +82,38 @@
                 }
             }
         }
+        function nextlist(data) {
+            var nid = data.id
+            document.getElementById(nid).innerHTML = "Loading..."
+            document.getElementById(nid).setAttribute("disabled", true)
+            ajax.open('get', '/api/getlist?next_id=' + nid);
+            ajax.send();
+            ajax.onreadystatechange = function () {
+                if (ajax.readyState == 4 && ajax.status == 200) {
+                    document.getElementById(nid).innerHTML = "LOAD"
+                    document.getElementById(nid).removeAttribute("disabled")
+                    var render = ""
+                    var msg = JSON.parse(ajax.responseText);
+                    var wrapper = document.getElementById('wrapper');
+                    if (msg["status"] === 0) {
+                        var st_data = msg["data"]
+                        for (var i in st_data) {
+                            var data = st_data[i]
+                            var date_ele = '<p>' + data['date'] + '</p>'
+                            var title_ele = '<p class="leftp">' + data['title'] + '</p>'
+                            var pic_ele = '<p><img src="' + data["picture_url"] + '" width="600px" /></p>'
+                            var movie_ele = '<p><button class="button-success pure-button" name="download" id="download' + data["id"] + '" onclick=hlsdown(' + data["id"] + ') data-url=' + data["movie_url"] + '>Download</button></p>'
+                            var main_html = '<div class="cards">' + date_ele + title_ele + pic_ele + movie_ele + '</div>'
+                            render = render + main_html
+                        }
+                        document.getElementById(nid).id = msg["next_id"]
+                        wrapper.innerHTML = wrapper.innerHTML + render
+                    } else {
+                        wrapper.innerHTML = '<div>No Data</div>'
+                    }
+                }
+            }
+        }
         function getlist() {
             document.getElementById("stlist").innerHTML = "Scanning..."
             document.getElementById("stlist").setAttribute("disabled", true)
@@ -90,16 +126,23 @@
                     var render = ""
                     var msg = JSON.parse(ajax.responseText);
                     var wrapper = document.getElementById('wrapper');
-                    for (var i in msg) {
-                        var data = msg[i]
-                        var date_ele = '<p>' + data['date'] + '</p>'
-                        var title_ele = '<p class="leftp">' + data['title'] + '</p>'
-                        var pic_ele = '<p><img src="' + data["picture_url"] + '" width="600px" /></p>'
-                        var movie_ele = '<p><button class="button-success pure-button" name="download" id="download' + data["index"] + '" onclick=hlsdown(' + data["index"] + ') data-url=' + data["movie_url"] + '>Download</button></p>'
-                        var main_html = '<div class="cards">' + date_ele + title_ele + pic_ele + movie_ele + '</div>'
-                        render = render + main_html
+                    var load = document.getElementById('load');
+                    if (msg["status"] === 0) {
+                        var st_data = msg["data"]
+                        for (var i in st_data) {
+                            var data = st_data[i]
+                            var date_ele = '<p>' + data['date'] + '</p>'
+                            var title_ele = '<p class="leftp">' + data['title'] + '</p>'
+                            var pic_ele = '<p><img src="' + data["picture_url"] + '" width="600px" /></p>'
+                            var movie_ele = '<p><button class="button-success pure-button" name="download" id="download' + data["id"] + '" onclick=hlsdown(' + data["id"] + ') data-url=' + data["movie_url"] + '>Download</button></p>'
+                            var main_html = '<div class="cards">' + date_ele + title_ele + pic_ele + movie_ele + '</div>'
+                            render = render + main_html
+                        }
+                        load.innerHTML = '<button id=' + msg["next_id"] + ' class="pure-button pure-button-primary" onclick="nextlist(this)">LOAD</button>'
+                        wrapper.innerHTML = render
+                    } else {
+                        wrapper.innerHTML = '<div>No Data</div>'
                     }
-                    wrapper.innerHTML = render
                 }
             }
         }
@@ -111,7 +154,7 @@
         <button class="pure-button pure-button-primary" name="stlist" id="stlist" onclick="getlist()">Get List</button>
     </div>
     <div class="wrapper" id="wrapper"></div>
-
+    <div class="load" id="load"></div>
 </body>
 
 </html>
