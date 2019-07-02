@@ -4,7 +4,16 @@
 
 #### 运行环境
 
-确认系统安装有python2.7环境（二进制版不需要python环境）
+python3.6
 
-#### 外部工具
-[openssl](http://slproweb.com/products/Win32OpenSSL.html)（windows需要额外安装openssl）
++ flask
++ requests
++ pycryptodome
+
+#### 使用说明
+```python
+python run.py
+```
+浏览器打开 http://127.0.0.1:5000
+
+视频保存在项目根目录

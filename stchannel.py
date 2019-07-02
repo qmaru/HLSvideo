@@ -1,282 +1,242 @@
 # -*- coding: UTF-8 -*-
 # @author AoBeom
 # @create date 2017-12-27 18:00:45
-# @modify date 2017-12-27 18:00:45
+# @modify date 2019-06-19 14:25:19
 # @desc [STchannel Video Download]
-import binascii
+import datetime
+import json
+import logging
 import os
 import platform
 import re
 import shutil
-import subprocess
-import sys
 import time
 from multiprocessing.dummy import Pool
 
 import requests
+from Crypto.Cipher import AES
+
+SESSION = requests.Session()
+WORKDIR = os.path.dirname(os.path.abspath(__file__))
+DATENAME = time.strftime('%y%m%d%H%M%S', time.localtime(time.time()))
+TOKEN_FILE = os.path.join(WORKDIR, ".token.json")
 
 
-class HLSVideo(object):
+def log(mode, *para):
+    logging.basicConfig(
+        level=logging.NOTSET, format='%(asctime)s - %(filename)s [%(levelname)s] %(message)s')
+    logging.getLogger("requests").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    log = getattr(logging, mode)
+    para = [str(i) for i in para]
+    msg = " - ".join(para)
+    log(msg)
+
+
+def execute_time(func):
+    def wrapper():
+        start = time.time()
+        func()
+        end = time.time()
+        log("info", "Execute: {}s".format(str(int(end - start))))
+    return wrapper
+
+
+def get_token():
+    if os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE, "r") as f:
+            data = json.loads(f.read())
+        token = data.get("token")
+        return token
+    return None
+
+
+def set_token(token):
+    data = {"token": token}
+    with open(TOKEN_FILE, "w") as f:
+        f.write(json.dumps(data))
+
+
+class STchannelAPI():
     def __init__(self):
-        self.datename = time.strftime(
-            '%y%m%d%H%M%S', time.localtime(time.time()))
-        self.videoname = ""
-        self.openssl = ""
-
-    # request
-    def __requests(self, url, headers=None, cookies=None, timeout=30):
-        if headers:
-            headers = headers
-        else:
-            headers = {
-                "User-Agent": "UlizaPlayer_Android/2.5.2 (Android/7.1.1; E6533; Build/32.4.A.0.160; Radio/8994-FAAAANAZQ-00028-36)"
-            }
-        if cookies:
-            response = requests.get(url, headers=headers,
-                                    cookies=cookies, timeout=timeout)
-        else:
-            response = requests.get(url, headers=headers, timeout=timeout)
-        return response
-
-    # windows / other
-    def __isWindows(self):
-        return 'Windows' in platform.system()
-
-    # create folder [ filename + now_date ]
-    def __isFolder(self, filename):
-        try:
-            filename = filename + "_" + self.datename
-            propath = os.getcwd()
-            video_path = os.path.join(propath, filename)
-            if not os.path.exists(video_path):
-                os.mkdir(video_path)
-                return video_path
-            else:
-                return video_path
-        except BaseException, e:
-            raise e
-
-    def __errorList(self, value, para1=None, para2=None, para3=None):
-        infos = {
-            "url_error": "Url is incorrect.",
-            "key_error": "Wrong key. Please check url.",
-            "total_error": "Video is not complete, please download again [Total: {} Present: {}]".format(para1, para2),
-            "not_found": "Not Found {}.ts".format(para1),
-            "dec_error": "Solve the problem, please run again [ hlsvideo -e {} -k {} ]".format(para1, para2),
+        self.user_api = "https://st-api.st-channel.jp/v1/users"
+        self.movie_api = "https://st-api.st-channel.jp/v1/movies?"
+        self.headers = {
+            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 7.1.1; E6533 Build/32.4.A.0.160)",
+            "Content-Type": "application/json; charset=UTF-8"
         }
-        available = "url_error, key_error, total_error"
-        print infos.get(value, "Keyword: " + available)
-        raw_input("Press Enter to exit.\r\n")
-        sys.exit()
 
-    # openssl / ffmpeg
-    def __execCheck(self, video_type):
-        prog_openssl = subprocess.Popen(
-            "openssl version", stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-        result_err = prog_openssl.stderr.read()
-        if result_err:
-            self.openssl = raw_input("openssl path: \r\n")
+    def __dformat(self, date):
+        dateformat = datetime.datetime.strptime(
+            date, '%Y-%m-%dT%H:%M:%S+09:00')
+        dateformat = str(dateformat)
+        darray = time.strptime(dateformat, "%Y-%m-%d %H:%M:%S")
+        dformats = time.strftime("%Y-%m-%d %H:%M:%S", darray)
+        return dformats
 
-    # main function [ key, video_url ]
-    def hlsInfo(self, playlist):
-        playlist = playlist
-        key_video = []
-        response = self.__requests(playlist)
-        m3u8_list_content = response.text
-        cookies = response.cookies
-        rule_m3u8 = r"^[\w\-\.\/\:\?\&\=]+"
-        rule_px = r"RESOLUTION=[\w]+"
-        if "m3u8" in m3u8_list_content:
-            m3u8urls = re.findall(rule_m3u8, m3u8_list_content, re.S | re.M)
-            # check resolution
-            px_sel_num = len(m3u8urls)
-            if px_sel_num != 1:
-                px_sels = re.findall(rule_px, m3u8_list_content, re.S | re.M)
-                px_sels = [p.split("=")[-1].replace("x", "").zfill(4)
-                           for p in px_sels]
-                if len(px_sels) == 0:
-                    rule_bd = r"BANDWIDTH=[\w]+"
-                    bd_sels = re.findall(
-                        rule_bd, m3u8_list_content, re.S | re.M)
-                    bd_sels = [b.split("=")[-1].zfill(4) for b in bd_sels]
-                    maxindex = bd_sels.index(max(bd_sels))
-                else:
-                    maxindex = px_sels.index(max(px_sels))
-                m3u8kurl = m3u8urls[maxindex]
-            else:
-                m3u8kurl = ''.join(m3u8urls)
+    def auth_token(self):
+        log("info", "[01] Get token...")
+        if get_token():
+            return get_token()
         else:
-            self.__errorList("url_error")
+            userInfo = SESSION.post(self.user_api, headers=self.headers, timeout=30).text
+            token = json.loads(userInfo)["api_token"]
+            set_token(token)
+            return token
 
-        # stchannel info
-        parts = m3u8kurl.split("/")
-        m3u8host = "http://" + parts[2] + "/" + parts[3] + "/"
-        m3u8main = m3u8kurl
-        m3u8_content = self.__requests(m3u8main).text
+    def get_info(self):
+        token = self.auth_token()
+        log("info", "[02] Token: {}".format(token))
+        header_auth = self.headers.copy()
+        header_auth["authorization"] = "Bearer " + token
+        api_param = {
+            "since_id": 0,
+            "device_type": 2,
+            "since_order": 0,
+            "sort": "order"
+        }
+        log("info", "[03] Get movie information with API...")
+        response = SESSION.get(
+            self.movie_api, headers=header_auth, params=api_param, timeout=30)
+        code = response.status_code
+        while code != 200:
+            log("info", "Token Refresh...")
+            token = self.get_token()
+            header_auth["Authorization"] = "Bearer " + token
+            response = SESSION.get(
+                self.movie_api, headers=header_auth, params=api_param, timeout=30)
+            code = response.status_code
+        movie_info = json.loads(response.text)
+        return movie_info
+
+    def get_movie_url(self, movie_info):
+        st_info = []
+        for index, value in enumerate(movie_info["movies"]):
+            st_new = {}
+            st_title = value["title"].strip()
+            st_movie = requests.utils.unquote(value["movie_url_everyone"]).replace(
+                "ulizasekailab", "https").replace("videoquery=", "")
+            st_thumbnail = value["thumbnail_path"]
+            st_date = self.__dformat(value["publish_start_date"])
+            st_new["index"] = str(index + 1)
+            st_new["title"] = st_title
+            st_new["movie_url"] = st_movie
+            st_new["picture_url"] = st_thumbnail
+            st_new["date"] = st_date
+            st_info.append(st_new)
+        return st_info
+
+
+class HLSdownload():
+    def __init__(self):
+        self.headers = {
+            "User-Agent": "UlizaPlayer_Android/2.5.2 (Android/7.1.1; E6533; Build/32.4.A.0.160; Radio/8994-FAAAANAZQ-00028-36)"
+        }
+
+    def get_response(self, url):
+        return SESSION.get(url, headers=self.headers)
+
+    def get_content(self, url):
+        return SESSION.get(url, headers=self.headers).text
+
+    def get_binary(self, url):
+        return SESSION.get(url, headers=self.headers).content
+
+    def create_folder(self, name):
+        unique_name = "{}_{}".format(DATENAME, name)
+        save_path = os.path.join(WORKDIR, unique_name)
+        if os.path.exists(save_path):
+            return save_path
+        os.mkdir(save_path)
+        return save_path
+
+    def decrypt_media(self, data, key, iv):
+        cryptor = AES.new(key, AES.MODE_CBC, iv)
+        data_dec = cryptor.decrypt(data)
+        return data_dec
+
+    def get_best_info(self, playlist):
+        log("info", "[04] Get best URL from playlist: {}".format(playlist))
+        playlist_content = self.get_content(playlist)
+        rule_m3u8 = r"^[\w\-\.\/\:\?\&\=\%\,\+]+"
+        m3u8_urls = re.findall(rule_m3u8, playlist_content, re.S | re.M)
+        m3u8_best_url = ''.join(m3u8_urls)
+        log("info", "[05] Get m3u8 content from best URL: {}".format(m3u8_best_url))
+        m3u8_content = self.get_content(m3u8_best_url)
+
+        parts = m3u8_best_url.split("/")
+        video_host = "http://" + parts[2] + "/" + parts[3] + "/"
 
         rule_video = r'[^#\S+][\w\/\-\.\:\?\&\=]+'
-        videourl = re.findall(rule_video, m3u8_content, re.S | re.M)
-        videohost = m3u8host
+        video_uris = re.findall(rule_video, m3u8_content, re.S | re.M)
+        video_urls = [video_host + i.strip() for i in video_uris]
+        log("info", "[06] A video URL: {}".format(video_urls[0]))
 
-        # download key and save urls
         rule_key = r'URI=\"(.*?)\"'
         keyurl = re.findall(rule_key, m3u8_content)
-        keyfolder = self.__isFolder("keys")
-        keylist = []
-        print "(1)Key downloading...[{}]".format(str(len(keyurl)))
-        keyurl = ''.join(keyurl)
-        # download key
-        keyname = "STkey"
-        keypath = os.path.join(keyfolder, keyname)
-        keylist.append(keypath)
-        r = self.__requests(keyurl, cookies=cookies)
-        with open(keypath, "wb") as code:
-            for chunk in r.iter_content(chunk_size=1024):
-                code.write(chunk)
-        if os.path.getsize(keypath) != 16:
-            self.__errorList("key_error")
-        key_video.append(keylist)
-        # save urls
-        videourls = [videohost + v.strip() for v in videourl]
-        key_video.append(videourls)
+        key_url = ''.join(keyurl)
+        log("info", "[07] Key URL: {}".format(key_url))
+        key = self.get_binary(key_url)
+
+        key_video = {
+            "key": key,
+            "urls": video_urls
+        }
         return key_video
 
-    def __retry(self, urls, files):
-        try:
-            print "   Retrying..."
-            r = self.__requests(urls)
-            with open(files, "wb") as code:
-                for chunk in r.iter_content(chunk_size=1024):
-                    code.write(chunk)
-        except BaseException:
-            print "[%s] is failed." % urls
-
     def __download(self, para):
-        urls = para[0]
-        files = para[1]
-        try:
-            r = self.__requests(urls)
-            with open(files, "wb") as code:
-                for chunk in r.iter_content(chunk_size=1024):
-                    code.write(chunk)
-        except BaseException:
-            self.__retry(urls, files)
+        url = para[0]
+        key = para[1]
+        iv = para[2]
+        files = para[3]
+        res = self.get_response(url)
+        with open(files, "wb") as code:
+            data = self.decrypt_media(res.content, key, iv)
+            code.write(data)
 
-    def hlsDL(self, keyvideo):
-        keyvideo = keyvideo
-        # Check the number of keys
-        keypath = [''.join(kv) for kv in keyvideo[0]]
-        videourls = keyvideo[1]
-        videos = []
-        video_folder = self.__isFolder("encrypt")
-        # Rename the video for sorting
-        for i in range(0, len(videourls)):
-            video_num = i + 1
-            video_name = str(video_num).zfill(4) + ".ts"
-            video_encrypt = os.path.join(video_folder, video_name)
-            videos.append(video_encrypt)
-        total = len(videourls)
-        print "(2)GET Videos...[{}]".format(total)
-        print "Please wait..."
-        thread = total / 4
-        # Multi-threaded configuration
-        if thread > 100:
-            thread = 20
+    def __concat(self, save_path):
+        log("info", "[09] Merge video...")
+        videos = [os.path.join(save_path, v) for v in os.listdir(save_path)]
+        output_video = os.path.join(WORKDIR, "{}.ts".format(DATENAME))
+        if "Windows" in platform.system():
+            input_video = "+".join(videos)
+            cmd = "copy /B {} {} >nul 2>nul".format(input_video, output_video)
         else:
-            thread = 10
-        pool = Pool(thread)
-        pool.map(self.__download, zip(videourls, videos))
+            input_video = " ".join(videos)
+            cmd = "cat {} > {}".format(input_video, output_video)
+        os.system(cmd)
+
+        os.chmod(save_path, 128)
+        shutil.rmtree(save_path)
+        log("info", "[10] Finished. Check {}.ts".format(DATENAME))
+
+    def run(self, key_video):
+        log("info", "[08] Downloading... & Decrypting...")
+        key = key_video["key"]
+        urls = key_video["urls"]
+        total = len(urls)
+        keys = [key] * total
+        ivs = [bytes.fromhex('%032x' % i) for i in range(0, total)]
+        save_path = self.create_folder("videos")
+        files = [os.path.join(save_path, str(i).zfill(4) + ".ts") for i in range(0, total)]
+
+        pool = Pool(4)
+        pool.map(self.__download, list(zip(urls, keys, ivs, files)))
         pool.close()
         pool.join()
-        present = len(os.listdir(video_folder))
-        if present != total:
-            self.__errorList("total_error", total, present)
-        # Video merge
-        keypath = ''.join(keypath)
-        self.hlsDec(keypath, videos)
-        folder = "decrypt_" + self.datename
-        videoname = os.path.join(folder, self.datename + ".ts")
-        if os.path.exists(videoname):
-            print "(3)Successful!"
-            print "(4)Please check [ %s ]" % (self.datename + ".ts")
 
-        # clear
-        enpath = "encrypt_" + self.datename
-        kpath = "keys_" + self.datename
-        os.chmod(folder, 128)
-        os.chmod(enpath, 128)
-        os.chmod(kpath, 128)
-        shutil.rmtree(enpath)
-        shutil.rmtree(kpath)
-        shutil.copy(videoname, os.getcwd())
-        shutil.rmtree(folder)
-
-    def __concat(self, ostype, inputv, outputv):
-        if ostype == "windows":
-            os.system("copy /B " + inputv + " " + outputv + " >nul 2>nul")
-        elif ostype == "linux":
-            os.system("cat " + inputv + " >" + outputv)
-
-    def hlsConcat(self, videolist, outname=None):
-        if outname is None:
-            outname = self.datename + ".ts"
-        else:
-            outname = outname
-        videolist = videolist
-        stream = ""
-        videofolder = self.__isFolder("decrypt")
-        videoput = os.path.join(videofolder, outname)
-        if self.__isWindows():
-            for v in videolist:
-                stream += v + "+"
-            videoin = stream[:-1]
-            self.__concat("windows", videoin, videoput)
-        else:
-            for v in videolist:
-                stream += v + " "
-            videoin = stream[:-1]
-            self.__concat("linux", videoin, videoput)
-
-    def hlsDec(self, keypath, videos):
-        videos = videos
-        indexs = range(0, len(videos))
-        ivs = range(1, len(videos) + 1)
-        k = keypath
-        # format key
-        STkey = open(k, "rb").read()
-        KEY = binascii.b2a_hex(STkey)
-        videoin = self.__isFolder("encrypt")
-        videoout = self.__isFolder("decrypt")
-        new_videos = []
-        # Decrypt the video
-        for index in indexs:
-            inputV = videos[index]
-            iv = ivs[index]
-            if self.__isWindows():
-                outputV = videos[index].split("\\")[-1] + "_dec.ts"
-            else:
-                outputV = videos[index].split("/")[-1] + "_dec.ts"
-            # format iv
-            iv = '%032x' % iv
-            inputVS = os.path.join(videoin, inputV)
-            outputVS = os.path.join(videoout, outputV)
-            if self.openssl:
-                prog = self.openssl
-            else:
-                prog = "openssl"
-            command = prog + " aes-128-cbc -d -in " + inputVS + \
-                " -out " + outputVS + " -nosalt -iv " + iv + " -K " + KEY
-            os.system(command)
-            new_videos.append(outputVS)
-        self.hlsConcat(new_videos)
+        self.__concat(save_path)
 
 
 def main():
-    HLS = HLSVideo()
-    playlist = raw_input("Enter Playlist url: ")
-    keyvideo = HLS.hlsInfo(playlist)
-    HLS.hlsDL(keyvideo)
-    raw_input("Please press Enter to exit.")
+    api = STchannelAPI()
+    hls = HLSdownload()
+    movie_info = api.get_info()
+    movie_urls = api.get_movie_url(movie_info)
+    for movie in movie_urls:
+        url = movie["movie_url"]
+        key_video = hls.get_best_info(url)
+        hls.run(key_video)
 
 
 if __name__ == '__main__':
