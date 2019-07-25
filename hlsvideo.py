@@ -229,9 +229,16 @@ class HLSVideo():
         if self.debug:
             log("debug", "videoiv", self.iv)
         video_keyurls = self.get_keyurls()
+        if video_keyurls:
+            self.unencrypt = False
+        else:
+            self.unencrypt = True
 
         if self.debug:
-            log("debug", "video keyurl", video_keyurls[0])
+            if video_keyurls:
+                log("debug", "video keyurl", video_keyurls[0])
+            else:
+                log("debug", "video keyurl", video_keyurls)
 
         if self.type == "ABEMA":
             keyfile = input("Enter Hex Key: ")
@@ -245,7 +252,7 @@ class HLSVideo():
             videokeys = self.get_keystr(video_keyurls, "video")
 
         # 获取 m3u8 播放列表最佳音频地址
-        if self.type == "TVer" and self.iv != "":
+        if self.type == "TVer":
             m3u8_best_audio_url = self.get_best_audio_url()
             self.m3u8_audio_bestmatch = self.get_content(m3u8_best_audio_url)
             audiohost, audiourls = self.set_media_host(audio=True)
@@ -289,11 +296,14 @@ class HLSVideo():
         vkeys = key_video["vkeys"]
         aurls = key_video["aurls"]
         akeys = key_video["akeys"]
-        if aurls and akeys:
+        if aurls or akeys:
             # 音频保存路径列表
             audio_prefix, audios_save_path = self.set_save_folder(aurls, "encrypt_audio")
             self.set_download(audio_prefix, audios_save_path, aurls, "audio")
-            self.hlsDec(akeys, audios_save_path,  "decrypt_audio")
+            if akeys:
+                self.hlsDec(akeys, audios_save_path, "decrypt_audio")
+            else:
+                self.hlsConcat(audios_save_path, "encrypt_audio")
 
         # 视频保存路径列表
         video_prefix, videos_save_path = self.set_save_folder(vurls, "encrypt_video")
@@ -387,18 +397,21 @@ class HLSVideo():
         tool.data_transfer(videoput, WORKDIR)
 
     def data_check(self):
-        if self.type == "TVer" and self.iv != "":
-            if self.iv != 0:
-                log("info", "(4)Merging Meida...")
+        if self.type == "TVer":
+            log("info", "(4)Merging Meida...")
+            tver_output = os.path.join(WORKDIR, DATENAME + "_all.ts")
+            if self.unencrypt:
+                tver_video = os.path.join(WORKDIR, "encrypt_video_{}.ts".format(DATENAME))
+                tver_audio = os.path.join(WORKDIR, "encrypt_audio_{}.ts".format(DATENAME))
+            else:
                 tver_video = os.path.join(WORKDIR, "decrypt_video_{}.ts".format(DATENAME))
                 tver_audio = os.path.join(WORKDIR, "decrypt_audio_{}.ts".format(DATENAME))
-                tver_output = os.path.join(WORKDIR, DATENAME + "_all.ts")
-                tool.ffmpeg_concat(tver_video, tver_audio, tver_output)
-                msg = "Please Check [ {} ]".format(tver_output)
-                if not self.debug:
-                    encpath_audio = os.path.join(WORKDIR, "encrypt_audio_{}".format(DATENAME))
-                    decpath_audio = os.path.join(WORKDIR, "decrypt_audio_{}".format(DATENAME))
-                    tool.clean_cache(encpath_audio, decpath_audio)
+            tool.ffmpeg_concat(tver_video, tver_audio, tver_output)
+            msg = "Please Check [ {} ]".format(tver_output)
+            if not self.debug:
+                encpath_audio = os.path.join(WORKDIR, "encrypt_audio_{}".format(DATENAME))
+                decpath_audio = os.path.join(WORKDIR, "decrypt_audio_{}".format(DATENAME))
+                tool.clean_cache(encpath_audio, decpath_audio)
         else:
             media_path = os.path.join(WORKDIR, "decrypt_video_{}.ts".format(DATENAME))
             msg = "Please Check [ {} ]".format(media_path)
