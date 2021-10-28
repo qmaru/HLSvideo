@@ -74,9 +74,11 @@ class HLSVideo():
     def set_m3u8_host(self, m3u8best):
         if self.type in ["GYAO"]:
             m3u8host = "https://" + self.playlist.split("/")[2] + "/"
-        elif self.type in ["ABEMA", "Yahoo"]:
+        elif self.type in ["Yahoo"]:
             uri = [_ for _ in self.playlist.split("/")[1:-1] if _]
             m3u8host = "https://" + "/".join(uri) + "/"
+        elif self.type in ["ABEMA"]:
+            m3u8host = self.playlist.split("playlist.m3u8")[0]
         else:
             m3u8host = tool.check_host("m3u8 host", m3u8best)
         return m3u8host
@@ -93,6 +95,8 @@ class HLSVideo():
         elif self.type in ["Asahi", "STchannel", "FOD"]:
             uri = [_ for _ in m3u8best.split("/")[1:-1] if _]
             media_host = "https://" + "/".join(uri) + "/"
+        elif self.type in ["ABEMA"]:
+            media_host = self.playlist.split("program")[0]
         else:
             media_host = tool.check_host("video host", media_url[0].strip())
         media_urls = [media_host + v.strip() for v in media_url]
@@ -187,7 +191,7 @@ class HLSVideo():
             if video_type in ["GYAO", "MBS"]:
                 self.keyparts = 10
             if video_type == "ABEMA":
-                spec_info = """Please debug: source -> theoplayer.d.js -> var t = e.data\r\nConsole: Array.from(e.data.N8, function(byte){return ('0' + (byte & 0xFF).toString(16)).slice(-2);}).join('')"""
+                spec_info = """Please debug: source -> theoplayer.d.js -> var n = t.data\r\nConsole: Array.from(t.data.iyt, function(byte){return ('0' + (byte & 0xFF).toString(16)).slice(-2);}).join('')"""
                 print(spec_info)
             self.type = video_type
             self.playlist = playlist
