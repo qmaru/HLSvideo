@@ -1,8 +1,3 @@
-# -*- coding: UTF-8 -*-
-# @author AoBeom
-# @create date 2017-12-25 04:49:59
-# @modify date 2019-06-06 16:02:31
-# @desc [HLS downloader]
 import argparse
 import os
 import platform
